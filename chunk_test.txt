@@ -1,0 +1,29 @@
+=== Compressed chunk at offset 1152 ===
+magic = 0x9E2A83C1 (OK)
+BlockSize = 131072 (128KB)
+CompressedSize = 4192038405158436 (0xEE4A300063624)
+UncompressedSize = 562949953451492 (0x20000000075E4)
+
+=== Scanning for all compressed chunk headers (UE3 magic) ===
+  [offset=1152] magic, blockSz=131072, compSz=4192038405158436, uncompSz=562949953451492 -> dubious
+  [offset=408308] magic, blockSz=131072, compSz=16565332382250923, uncompSz=562949953551370 -> dubious
+  [offset=4273055] magic, blockSz=131072, compSz=31517797170296048, uncompSz=562949953551105 -> dubious
+  [offset=11627103] magic, blockSz=131072, compSz=27937903273539401, uncompSz=562949953551103 -> dubious
+  [offset=18146120] magic, blockSz=131072, compSz=1185806110962341, uncompSz=562949953551121 -> dubious
+  [offset=18421269] magic, blockSz=131072, compSz=19371389136204169, uncompSz=562949953551091 -> dubious
+  [offset=22939846] magic, blockSz=131072, compSz=12596597916227147, uncompSz=562949953551387 -> dubious
+  [offset=25878489] magic, blockSz=131072, compSz=16821501411713344, uncompSz=562949953551374 -> dubious
+  [offset=29803033] magic, blockSz=131072, compSz=1502800467283828, uncompSz=562949953551390 -> dubious
+  [offset=30151093] magic, blockSz=131072, compSz=7936970715840252, uncompSz=562949953551402 -> dubious
+  [offset=32002361] magic, blockSz=131072, compSz=2281911829833413, uncompSz=562949953520286 -> dubious
+  [offset=32438326] magic, blockSz=131072, compSz=7474084909760730, uncompSz=562949953541999 -> dubious
+  [offset=33569168] magic, blockSz=131072, compSz=2360612810243340, uncompSz=562949953458088 -> dubious
+  [offset=33683156] magic, blockSz=131072, compSz=4506026284752071, uncompSz=562949953494719 -> dubious
+  [offset=34542579] magic, blockSz=131072, compSz=4506369882058288, uncompSz=562949953483391 -> dubious
+  [offset=35324539] magic, blockSz=131072, compSz=36031782025514208, uncompSz=562949953477433 -> dubious
+  [offset=39604595] magic, blockSz=131072, compSz=4506369882097725, uncompSz=562949953519927 -> dubious
+  [offset=40425992] magic, blockSz=131072, compSz=4506026284793706, uncompSz=562949953521360 -> dubious
+  [offset=41327050] magic, blockSz=131072, compSz=4506133658837204, uncompSz=562949953509717 -> dubious
+  [offset=42089206] magic, blockSz=131072, compSz=4506026284559674, uncompSz=562949953500086 -> dubious
+  [offset=42756232] magic, blockSz=131072, compSz=15874199127834, uncompSz=15874199127834 -> dubious
+Total valid chunk headers found: 0

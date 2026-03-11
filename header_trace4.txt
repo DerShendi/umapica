@@ -1,0 +1,33 @@
+File size: 42758074 bytes = 40 MB
+Chunk[0] compressed data at 976035, 1152 bytes
+  First 16 bytes: 8539e8ef6cf739e8569a2e3909ed8458
+  Last 4 bytes: 04044dbc
+  zlib failed: Error -3 while decompressing data: incorrect header check
+  zlib raw deflate failed: Error -3 while decompressing data: invalid code lengths set
+
+At offset 1152 (compSz of chunk0): c1832a9e
+  Is UE magic: True
+  LegacyVer at 1152+4 = 131072
+
+Alternative: Chunk[0] = data[21:837]:
+  First 16 bytes: 09008a220d0400003003000033060000
+  zlib failed: Error -3 while decompressing data: incorrect header check
+  raw deflate failed: Error -3 while decompressing data: invalid stored block lengths
+
+Looking for zlib signature (78 9C or 78 01 or 78 DA):
+  Found 789c at offset 4827
+  Found 7801 at offset 2873
+  Found 78da at offset 78909
+
+CompressionFlags=136=0x88 = ??? in UE3. UE3 flags: LZO=0x02 means ZLIB?
+Checking data at CompressedOffset from chunk[0] = 976035:
+  data[976035:976035+16] = 8539e8ef6cf739e8569a2e3909ed8458
+  data[976035:976035+4] as uint32 = 4024973701
+At compOff=976035: magic bytes = 8539e8ef (expect c1 83 2a 9e = NO)
+At 1156 (after 2nd magic): value = 131072 (expect 131072=0x20000 for 128KB blocks)
+
+Reading chunk at offset 21:
+  magic = 0x228A0009 (WRONG)
+  BlockSize = 1037 (1KB)
+  CompressedSize (full block) = 6816113099568
+  UncompressedSize (full block) = 1258425456984

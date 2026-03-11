@@ -1,0 +1,30 @@
+Checking available decompression modules...
+  lzo: not available
+  pylzo: not available
+  lz4: not available
+  lz4.block: not available
+  lz4.frame: not available
+  zstandard: not available
+  brotli: not available
+
+CompressionFlags=2 = COMPRESS_LZO (bit 1)
+This file uses LZO compression!
+
+Trying pip install python-lzo...
+
+Data at offset 976035:
+  bytes: 8539e8ef6cf739e8569a2e3909ed8458
+  as uint32: 4024973701
+  bytes at 976035-8: 3abb6166178fee3f8539e8ef6cf739e8
+
+Header values [109..148]:
+  [109] = 2 (signed) = 2 (unsigned)
+  [113] = 21 (signed) = 21 (unsigned)
+  [117] = 816 (signed) = 816 (unsigned)
+  [121] = 976035 (signed) = 976035 (unsigned)
+  [125] = 1152 (signed) = 1152 (unsigned)
+  [129] = 407156 (signed) = 407156 (unsigned)
+  [133] = 976851 (signed) = 976851 (unsigned)
+  [137] = 3856917 (signed) = 3856917 (unsigned)
+  [141] = 408308 (signed) = 408308 (unsigned)
+  [145] = 3864747 (signed) = 3864747 (unsigned)

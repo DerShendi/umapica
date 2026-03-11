@@ -1,0 +1,53 @@
+=== Re-reading chunk at offset 1152 with int32 sizes ===
+magic = 0x9E2A83C1 (OK)
+BlockSize = 131072 (128KB)
+CompressedSize (total) = 407076
+UncompressedSize (total) = 976035
+NumSubBlocks = 8
+  SubBlock[0]: compSz=30180 uncompSz=131072
+  SubBlock[1]: compSz=106807 uncompSz=131072
+  SubBlock[2]: compSz=69549 uncompSz=131072
+  SubBlock[3]: compSz=96767 uncompSz=131072
+  SubBlock[4]: compSz=44065 uncompSz=131072
+  SubBlock[5]: compSz=16589 uncompSz=131072
+  SubBlock[6]: compSz=24514 uncompSz=131072
+  SubBlock[7]: compSz=18605 uncompSz=58531
+Compressed data starts at: 1232
+Data at coff: 0302000000300060
+ SubBlock[0]: first 8 bytes = 0302000000300060
+  zlib: Error -3 while decompressing data: incorrect header check
+  raw_deflate: Error -3 while decompressing data: invalid distance too far back
+
+=== Scanning for chunk headers (int32 sizes) ===
+  VALID chunk at 1152: blockSz=131072, compSz=407076, uncompSz=976035
+  VALID chunk at 408308: blockSz=131072, compSz=3864491, uncompSz=3856917
+  VALID chunk at 4273055: blockSz=131072, compSz=7353584, uncompSz=7338309
+  VALID chunk at 11627103: blockSz=131072, compSz=6518601, uncompSz=6504800
+  VALID chunk at 18146120: blockSz=131072, compSz=275109, uncompSz=276092
+  VALID chunk at 18421269: blockSz=131072, compSz=4518281, uncompSz=4510253
+  VALID chunk at 22939846: blockSz=131072, compSz=2938443, uncompSz=2932874
+  VALID chunk at 25878489: blockSz=131072, compSz=3924288, uncompSz=3916561
+  VALID chunk at 29803033: blockSz=131072, compSz=348020, uncompSz=349898
+  VALID chunk at 30151093: blockSz=131072, compSz=1851132, uncompSz=1847970
+  VALID chunk at 32002361: blockSz=131072, compSz=435909, uncompSz=531299
+  VALID chunk at 32438326: blockSz=131072, compSz=1130714, uncompSz=1740196
+  VALID chunk at 33569168: blockSz=131072, compSz=113932, uncompSz=549623
+  VALID chunk at 33683156: blockSz=131072, compSz=859335, uncompSz=1049141
+  VALID chunk at 34542579: blockSz=131072, compSz=781872, uncompSz=1049221
+  VALID chunk at 35324539: blockSz=131072, compSz=4279520, uncompSz=8389303
+  VALID chunk at 39604595: blockSz=131072, compSz=821309, uncompSz=1049221
+  VALID chunk at 40425992: blockSz=131072, compSz=900970, uncompSz=1049141
+  VALID chunk at 41327050: blockSz=131072, compSz=762068, uncompSz=1049166
+  VALID chunk at 42089206: blockSz=131072, compSz=666938, uncompSz=1049141
+  VALID chunk at 42756232: blockSz=131072, compSz=1818, uncompSz=3696
+Total valid chunks: 21
+
+=== Decompressing chunk at 1152 ===
+numSub=8
+  sub[0]: comp=30180 uncomp=131072
+  sub[1]: comp=106807 uncomp=131072
+  sub[2]: comp=69549 uncomp=131072
+Data at 1232: 0302000000300060
+SubBlock[0]: 30180 compressed bytes -> expecting 131072
+  zlib: Error -3 while decompressing data: incorrect header check
+  raw_deflate: Error -3 while decompressing data: invalid distance too far back

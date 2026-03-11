@@ -1,0 +1,38 @@
+magic=0x9E2A83C1 (expected 0x9E2A83C1 = OK)
+  2nd magic at offset 1152, legacyVer=131072
+
+Header bytes [0..60]:
+C1 83 2A 9E 78 03 05 00 04 58 02 00 05 00 00 00 4E 6F 6E 65 00 09 00 8A 22 0D 04 00 00 30 03 00 00 33 06 00 00 58 99 00 00 25 01 00 00 4C 79 00 00 38 3F 02 00 04 58 02 00 00 00 00
+
+=== Current UE3-path parsing ===
+[4] LegacyFileVersion = 328568
+[8] LicenseeVersion = 153604
+[13] FolderName len=5 value=[None]
+[21] PackageFlags = 0x228A0009
+[25] NameCount=1037  [offset=29] NameOffset=816
+[33] ExportCount=1587  [offset=37] ExportOffset=39256
+[41] ImportCount=293  [offset=45] ImportOffset=31052
+Current header-end position: 49
+File size (first 200KB read): 200000
+  NameOffset=816 - is it a valid offset? True
+  ExportOffset=39256 - is it a valid offset? True
+  ImportOffset=31052 - is it a valid offset? True
+
+=== Bytes at claimed NameOffset=816 (first 64 bytes) ===
+07 00 00 00 02 00 00 00 01 00 00 00 01 00 00 00 1B 06 00 00 40 00 00 00 20 00 00 00 07 00 00 00 07 00 00 00 01 00 00 00 01 00 00 00 28 06 00 00 04 00 00 00 04 00 00 00 03 00 00 00 05 00 00 00
+
+Attempt: UE3 name entry = null-terminated string + uint32 flags
+  Entry 0: name=[] flags=0x00020000 next_off=822
+  Entry 1: name=[] flags=0x00000100 next_off=827
+  Entry 2: name=[] flags=0x00000001 next_off=832
+  Entry 3: name=[] flags=0x00004000 next_off=839
+  Entry 4: name=[] flags=0x00000020 next_off=844
+
+=== Bytes at ExportOffset=39256 (first 32 bytes) ===
+B7 0B B7 B2 B6 59 B6 00 B6 A7 B5 4F B5 E7 B4 7A B4 0D B4 A0 B3 32 B3 C5 B2 58 B2 EB B1 7E B1 16
+
+=== Interpretation as two int16 ===
+Bytes[4..5] as uint16 = 888 (decimal), 0x0378
+Bytes[6..7] as uint16 = 5 (decimal), 0x0005
+Bytes[8..11] as int32 = 153604 (what if THIS is the real UE4 legacyVersion?)
+  Bytes[8..11] = 153604 (not negative, so not a prefix trick)

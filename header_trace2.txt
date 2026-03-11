@@ -1,0 +1,46 @@
+=== Possible FTextLocalizationResourceId or other tables ===
+Trying to find AssetRegistryDataOffset and more:
+[97] CookerIndicator? = 224
+[101] BulkDataStartOffset? = 12097
+[105] WorldCompositionDataOffset? = 136
+[109] AssetRegistryData? = 2
+[113] Off5 = 21
+[117] Off6 = 816
+[121] Off7 = 976035
+[125] Off8 = 1152
+
+At nameOff=816: uint16 = 7 = 0x0007
+  Lower 15 bits (length) = 7
+  Upper bit (isWide) = 0
+
+If format is uint16_header + chars:
+  Entry[0]: len=7 wide=0 name=['\x00\x00\x02\x00\x00\x00\x01'] hash_algo=0 hash=0x00000100
+  Entry[1]: len=6912 (skip -- likely wrong format)
+
+If format is FString (int32 len) + uint16 hash_algo + uint32 hash_val:
+  Entry[0]: len=7 name=['\x02\x00\x00\x00\x01\x00'] hash_algo=256 hash=0x1B000000 next=833
+  Entry[1]: bad len=1073741830 at offset=833
+
+If format is JUST FString (int32 len + chars, no hash):
+  Entry[0]: len=7 name=['\x02\x00\x00\x00\x01\x00'] next=827
+  Entry[1]: bad len=256 at offset=827
+
+=== Re-parsing from offset 49 with full UE3 (ver=888) interpretation ===
+[49] DependsOffset = 147256
+[53] SoftPkgRefsOffset = 153604  <- or CustomVersionsOffset?
+[57] zero_field_0 = 0
+[61] zero_field_1 = 0
+[65] zero_field_2 = 0
+[69] BasePackageGuid = a67fec6cde049a4fa0a486182654dfa4
+[85] PackageGuid = 01000000330600000d040000e0000000
+[101] GenerationCount = 12097
+  Gen[0]: ExportCount=136, NameCount=2
+  Gen[1]: ExportCount=21, NameCount=816
+  Gen[2]: ExportCount=976035, NameCount=1152
+  Gen[3]: ExportCount=407156, NameCount=976851
+  Gen[4]: ExportCount=3856917, NameCount=408308
+  Gen[5]: ExportCount=3864747, NameCount=4833768
+  Gen[6]: ExportCount=7338309, NameCount=4273055
+  Gen[7]: ExportCount=7354048, NameCount=12172077
+  Gen[8]: ExportCount=6504800, NameCount=11627103
+  Gen[9]: ExportCount=6519017, NameCount=18676877

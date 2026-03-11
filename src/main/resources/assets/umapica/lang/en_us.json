@@ -1,0 +1,29 @@
+{
+  "screen.umapica.title": "Umapica – UMAP Hologram Viewer",
+
+  "button.umapica.load":        "Load UMAP…",
+  "button.umapica.set_origin":  "Set Origin → Player Position",
+  "button.umapica.load_meshes": "Load Mesh Data (Ghost Mode)",
+  "button.umapica.remove":      "Remove",
+
+  "label.umapica.loaded_holograms": "Loaded Holograms",
+  "label.umapica.select_hologram":  "Select a hologram",
+
+  "key.category.umapica.category": "Umapica",
+  "key.umapica.open_gui":    "Open Umapica GUI",
+  "key.umapica.toggle_all":  "Toggle All Holograms",
+  "key.umapica.cycle_mode":  "Cycle Render Mode",
+
+  "key.umapica.rotate_x_pos": "Rotate Hologram +X (Numpad 8)",
+  "key.umapica.rotate_x_neg": "Rotate Hologram -X (Numpad 2)",
+  "key.umapica.rotate_y_pos": "Rotate Hologram +Y (Numpad 4)",
+  "key.umapica.rotate_y_neg": "Rotate Hologram -Y (Numpad 6)",
+  "key.umapica.rotate_z_pos": "Rotate Hologram +Z (Numpad 7)",
+  "key.umapica.rotate_z_neg": "Rotate Hologram -Z (Numpad 9)",
+
+  "umapica.configuration.title": "Umapica Options",
+  "umapica.configuration.defaultScale":   "Default Scale (UE units/block)",
+  "umapica.configuration.wireframeColor": "Wireframe Colour (ARGB hex)",
+  "umapica.configuration.voxelAlpha":     "Voxel Mode Alpha",
+  "umapica.configuration.ghostAlpha":     "Ghost Mesh Alpha"
+}

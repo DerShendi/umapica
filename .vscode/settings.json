@@ -1,0 +1,11 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "./gradlew": true,
+        "jar": true,
+        "javap": true,
+        "/^python -c \"\nimport struct\nwith open\\(r'C:\\\\Users\\\\Shendi\\\\Documents\\\\rojects\\\\Umapica\\\\run\\\\umapica\\\\mafia_town\\.umap','rb'\\) as f:\n    data = f\\.read\\(512\\)\n\noff = 0\nmagic = struct\\.unpack_from\\('<I', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'magic: 0x\\{magic:08X\\}'\\)\nlegacy = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'LegacyFileVersion: \\{legacy\\} \\(0x\\{legacy:08X\\}\\)'\\)\nue3 = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'LegacyUE3Version: \\{ue3\\}'\\)\nue4 = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'FileVersionUE4: \\{ue4\\}'\\)\nue5 = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'FileVersionUE5: \\{ue5\\}  \\(only valid if legacy <= -8\\)'\\)\nlicensee = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'LicenseeUE: \\{licensee\\}'\\)\ncustomCount = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'CustomVersionCount: \\{customCount\\}  -- offset \\{off\\}'\\)\n\n# Skip all custom versions \\(20 bytes each, optimized format\\)\noff \\+= customCount \\* 20\nprint\\(f'After custom versions offset: \\{off\\}'\\)\n\ntotalSz = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'TotalHeaderSize: \\{totalSz\\}'\\)\nstr_len = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nfolder = data\\[off:off\\+str_len-1\\]\\.decode\\('ascii','replace'\\); off\\+=str_len\nprint\\(f'FolderName: \\[\\{folder\\}\\]'\\)\nflags = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'PackageFlags: 0x\\{flags:08X\\}'\\)\nnCount = struct\\.unpack_from\\('<i', data, off\\)\\[0\\]; off\\+=4\nnOff = struct\\.unpack_from\\('<I', data, off\\)\\[0\\]; off\\+=4\nprint\\(f'NameCount=\\{nCount\\}  NameOffset=\\{nOff\\}  offset=\\{off\\}'\\)\n\"\n$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

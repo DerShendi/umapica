@@ -1,42 +1,39 @@
-package com.example.examplemod;
+package net.shendi.umapica;
 
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.Identifier;
-import net.minecraft.world.item.Item;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.fml.event.config.ModConfigEvent;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
-// An example config class. This is not required, but it's a good idea to have one to keep your config organized.
-// Demonstrates how to use Neo's config APIs
+import java.util.ArrayList;
+import java.util.List;
+
 public class Config {
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
-    public static final ModConfigSpec.BooleanValue LOG_DIRT_BLOCK = BUILDER
-            .comment("Whether to log the dirt block on common setup")
-            .define("logDirtBlock", true);
+    public static final ModConfigSpec.DoubleValue DEFAULT_SCALE = BUILDER
+            .comment("Default units-per-block scale when loading a UMAP file. " +
+                     "Unreal Engine uses 1 unit = 1 cm, so 100 units = 1 block by default.")
+            .defineInRange("defaultScale", 100.0, 1.0, 100000.0);
 
-    public static final ModConfigSpec.IntValue MAGIC_NUMBER = BUILDER
-            .comment("A magic number")
-            .defineInRange("magicNumber", 42, 0, Integer.MAX_VALUE);
+    public static final ModConfigSpec.IntValue WIREFRAME_COLOR = BUILDER
+            .comment("Default wireframe ARGB color (hex int). Default: 0xFF00FF00 (opaque green).")
+            .defineInRange("wireframeColor", 0xFF00FF00, Integer.MIN_VALUE, Integer.MAX_VALUE);
 
-    public static final ModConfigSpec.ConfigValue<String> MAGIC_NUMBER_INTRODUCTION = BUILDER
-            .comment("What you want the introduction message to be for the magic number")
-            .define("magicNumberIntroduction", "The magic number is... ");
+    public static final ModConfigSpec.IntValue VOXEL_ALPHA = BUILDER
+            .comment("Alpha (0-255) used when rendering voxel hologram blocks.")
+            .defineInRange("voxelAlpha", 100, 0, 255);
 
-    // a list of strings that are treated as resource locations for items
-    public static final ModConfigSpec.ConfigValue<List<? extends String>> ITEM_STRINGS = BUILDER
-            .comment("A list of items to log on common setup.")
-            .defineListAllowEmpty("items", List.of("minecraft:iron_ingot"), () -> "", Config::validateItemName);
+    public static final ModConfigSpec.IntValue GHOST_ALPHA = BUILDER
+            .comment("Alpha (0-255) used when rendering ghost mesh surfaces.")
+            .defineInRange("ghostAlpha", 80, 0, 255);
+
+    public static final ModConfigSpec.IntValue RENDER_DISTANCE = BUILDER
+            .comment("Maximum hologram render distance in blocks (32-512). Default 128.")
+            .defineInRange("renderDistance", 128, 32, 512);
+
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> ASSET_SEARCH_PATHS = BUILDER
+            .comment("Directories to search for .upk / .uasset mesh files. " +
+                     "Add the full path to your game's CookedPC folder here. " +
+                     "Example: C:/Program Files (x86)/Steam/steamapps/common/HatinTime/HatinTimeGame/CookedPC")
+            .defineListAllowEmpty("assetSearchPaths", List.of(), o -> o instanceof String);
 
     static final ModConfigSpec SPEC = BUILDER.build();
-
-    private static boolean validateItemName(final Object obj) {
-        return obj instanceof String itemName && BuiltInRegistries.ITEM.containsKey(Identifier.parse(itemName));
-    }
 }

@@ -1,0 +1,19 @@
+Decompressed 976035 bytes
+Bytes local 788..867 (virtual 809..888):
+  local[788] virt[809]: 00 00 00 00 10 00 07 00 0F 00 00 00 62 41 63 63  ............bAcc
+  local[804] virt[825]: 65 70 74 73 4C 69 67 68 74 73 00 00 00 00 00 10  eptsLights......
+  local[820] virt[841]: 00 07 00 15 00 00 00 62 41 63 63 65 70 74 73 53  .......bAcceptsS
+  local[836] virt[857]: 74 61 74 69 63 44 65 63 61 6C 73 00 00 00 00 00  taticDecals.....
+  local[852] virt[873]: 10 00 07 00 16 00 00 00 42 61 63 6B 67 72 6F 75  ........Backgrou
+
+=== Trying to read names assuming nameOffset=816 means localOff=795 === 
+At local 795 (virt 816): 00 = 0
+At local 796 (virt 817): 0f000000 = len=15
+
+=== Trying: nameOffset=816 is WRONG by 1, actual names at virt 817 = local 796 ===
+  Name[0]: [bAcceptsLights]
+  Entry[1]: bad len=0 at local_off=815 (virt=836)
+After 30 names, local off=819 (virt=840)
+
+=== Alternative: try with nameOffset=816 treated as 0-based local offset ===
+  bad len=268435456
