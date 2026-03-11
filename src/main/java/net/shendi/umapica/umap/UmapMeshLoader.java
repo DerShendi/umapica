@@ -35,7 +35,8 @@ public class UmapMeshLoader {
             long[]   expOffsets,
             long[]   expSizes,
             String[] expNames,
-            String[] expClassNames
+            String[] expClassNames,
+            String[] impNames
     ) {}
     private static final ConcurrentHashMap<String, ParsedUE3Package> UE3_CACHE = new ConcurrentHashMap<>();
 
@@ -43,7 +44,7 @@ public class UmapMeshLoader {
     private static final UmapMeshData EMPTY_SENTINEL = new UmapMeshData(new float[0], new int[0], FBox.EMPTY);
     private static final ConcurrentHashMap<String, UmapMeshData> MESH_RESULT_CACHE = new ConcurrentHashMap<>();
     private static int hexDumpCount = 0;
-    private static final int MAX_HEX_DUMPS = 5;
+    private static final int MAX_HEX_DUMPS = 50;
 
     /** Clears the UE3 decompression cache (call when reloading a file). */
     public static void clearUE3Cache() { UE3_CACHE.clear(); MESH_RESULT_CACHE.clear(); hexDumpCount = 0; }
@@ -234,7 +235,7 @@ public class UmapMeshLoader {
         if (cached != null) return cached == EMPTY_SENTINEL ? null : cached;
 
         UmapMeshData result = parseUE3MeshExport(br, dataOff, dataSize, pkg.fileVersion(),
-                upk.getName() + ":" + expNames[meshExpIdx]);
+                upk.getName() + ":" + expNames[meshExpIdx], pkg.impNames());
         MESH_RESULT_CACHE.put(meshKey, result != null ? result : EMPTY_SENTINEL);
         return result;
     }
@@ -366,21 +367,88 @@ public class UmapMeshLoader {
         // (ByteArrayUmapReader holds these internally; expose via a helper call)
         return new ParsedUE3Package(
                 br.getData(), br.getBaseVirt(), fileVersion,
-                names, expOffsets, expSizes, expNames, expClassNames);
+                names, expOffsets, expSizes, expNames, expClassNames, impNames);
     }
 
     /**
      * Parses a cooked UDK StaticMesh export from the decompressed ByteArrayUmapReader.
+     * Also reads the UE3 property list to extract material references for section.materialPath.
      */
     private static @Nullable UmapMeshData parseUE3MeshExport(ByteArrayUmapReader br,
-            long dataOff, long dataSize, int fileVersion, String upkName) throws IOException {
+            long dataOff, long dataSize, int fileVersion, String upkName,
+            @Nullable String[] impNames) throws IOException {
         long endPos = dataOff + dataSize;
 
-        // Scan the ENTIRE export for vertex/index data instead of relying on
-        // the property-list skip.  UE3 StaticMesh exports have complex native
-        // prefix data (kDOP tree, sections, etc.) that can confuse the property
-        // skipper, causing it to advance past the real vertex buffer.
-        return readMeshSimple(br, dataOff, endPos, upkName);
+        // Read material names from the property list before scanning for geometry
+        String[] matNames = (impNames != null && br.names != null)
+                ? readUE3MaterialNames(br, dataOff, endPos, br.names, impNames)
+                : new String[0];
+
+        // Scan the ENTIRE export for vertex/index data
+        UmapMeshData mesh = readMeshSimple(br, dataOff, endPos, upkName);
+
+        // Post-process sections: assign materialPath from resolved import names
+        if (mesh != null && matNames.length > 0 && mesh.sections != null) {
+            UmapMeshData.Section[] oldSecs = mesh.sections;
+            UmapMeshData.Section[] newSecs = new UmapMeshData.Section[oldSecs.length];
+            for (int i = 0; i < oldSecs.length; i++) {
+                UmapMeshData.Section s = oldSecs[i];
+                String matName = i < matNames.length ? matNames[i] : matNames[0];
+                newSecs[i] = new UmapMeshData.Section(s.firstIndex, s.indexCount, s.materialIndex, matName);
+            }
+            mesh.sections = newSecs;
+        }
+        return mesh;
+    }
+
+    /**
+     * Scans the UE3 property list at the start of a StaticMesh export and returns
+     * the resolved names of all entries in the {@code Materials} array.
+     * Import references (negative object indices) are resolved via {@code impNames}.
+     */
+    private static String[] readUE3MaterialNames(ByteArrayUmapReader br,
+            long dataOff, long endPos, String[] names, String[] impNames) {
+        List<String> mats = new ArrayList<>();
+        try {
+            br.seek(dataOff);
+            while (br.position() < endPos - 8) {
+                long pos = br.position();
+                int ni = br.readInt32(); br.readInt32();           // propName FName
+                if (ni < 0 || ni >= names.length) { br.seek(pos); break; }
+                String propName = names[ni];
+                if ("None".equals(propName)) break;
+
+                int ti = br.readInt32(); br.readInt32();           // propType FName
+                long propSize = br.readInt32() & 0xFFFFFFFFL;     // size in bytes
+                br.readInt32();                                    // arrayIndex
+                String propType = (ti >= 0 && ti < names.length) ? names[ti] : "";
+
+                // Consume type-specific tag extras
+                if ("StructProperty".equals(propType))            { br.readInt32(); br.readInt32(); }
+                else if ("ByteProperty".equals(propType))         { br.readInt32(); br.readInt32(); }
+                else if ("BoolProperty".equals(propType))         { br.readByte(); propSize = 0; }
+
+                long valStart = br.position();
+
+                if ("Materials".equals(propName) && "ArrayProperty".equals(propType)) {
+                    // TArray<MaterialInterface*>: [int32 numElems][int32 objRef × numElems]
+                    int numElems = br.readInt32();
+                    for (int e = 0; e < numElems && e < 64; e++) {
+                        int objRef = br.readInt32();
+                        if (objRef < 0) {
+                            int impIdx = -objRef - 1;
+                            if (impIdx < impNames.length) mats.add(impNames[impIdx]);
+                        }
+                    }
+                    break; // found what we need
+                }
+
+                long after = valStart + propSize;
+                if (after > endPos || after <= pos) break;
+                br.seek(after);
+            }
+        } catch (Exception e) { /* stop gracefully */ }
+        return mats.toArray(new String[0]);
     }
 
     /**
@@ -657,6 +725,111 @@ public class UmapMeshLoader {
             return buildMeshResult(positions, data, numV, idxResult, upkName, patName);
         }
 
+        // ══════════════ PASS 8: Index-first brute-force ════════════════════════════════
+        // Scans for uint16 index buffers using TWO patterns:
+        //   Pattern A: BulkSerialize  [elemSize=2][count][uint16*count]
+        //   Pattern B: Bare TArray    [count][uint16*count]  (no elemSize prefix)
+        // For each candidate index buffer, searches the export for matching float3
+        // position data.  ALL vertices are fully validated (not sampled) and the
+        // resulting bounds are sanity-checked to reject garbage-data hits.
+        {
+            int[][] idxCandidates = new int[64][3]; // [dataPhys, count, maxIdx]
+            int numCandidates = 0;
+
+            for (int q = physStart & ~3; q <= physEnd - 8 && numCandidates < 64; q += 4) {
+                // ── Pattern A: BulkSerialize [elemSize=2][count][data] ──────
+                if (ileInt32(data, q) == 2) {
+                    int n = ileInt32(data, q + 4);
+                    if (n >= 6 && n <= 2_000_000 && (n % 3) == 0
+                            && q + 8 + (long) n * 2 <= physEnd) {
+                        int maxI = 0;
+                        for (int i = 0; i < n; i++) {
+                            int v = ileUInt16(data, q + 8 + i * 2);
+                            if (v > maxI) maxI = v;
+                        }
+                        if (maxI >= 2 && maxI < 500_000) {
+                            idxCandidates[numCandidates][0] = q + 8;
+                            idxCandidates[numCandidates][1] = n;
+                            idxCandidates[numCandidates][2] = maxI;
+                            numCandidates++;
+                        }
+                    }
+                }
+
+                // ── Pattern B: Bare TArray [count][data] (no [2] prefix) ───
+                if (numCandidates < 64) {
+                    int n = ileInt32(data, q);
+                    if (n >= 6 && n <= 30_000 && (n % 3) == 0
+                            && q + 4 + (long) n * 2 <= physEnd) {
+                        int maxI = 0;
+                        for (int i = 0; i < n; i++) {
+                            int v = ileUInt16(data, q + 4 + i * 2);
+                            if (v > maxI) maxI = v;
+                        }
+                        if (maxI >= 2 && maxI < 500_000) {
+                            // Avoid duplicating a Pattern-A hit at the same data offset
+                            boolean alreadyFound = false;
+                            for (int ci = 0; ci < numCandidates; ci++) {
+                                if (idxCandidates[ci][0] == q + 4) { alreadyFound = true; break; }
+                            }
+                            if (!alreadyFound) {
+                                idxCandidates[numCandidates][0] = q + 4;
+                                idxCandidates[numCandidates][1] = n;
+                                idxCandidates[numCandidates][2] = maxI;
+                                numCandidates++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (int ci = 0; ci < numCandidates; ci++) {
+                int idxDataPhys = idxCandidates[ci][0];
+                int idxCount    = idxCandidates[ci][1];
+                int maxIdx      = idxCandidates[ci][2];
+                int numV        = maxIdx + 1;
+
+                // Search entire export for matching float3 positions
+                for (int testStride : new int[]{12, 24, 28, 20, 32, 36, 40, 44, 48}) {
+                    long needed = (long) numV * testStride;
+                    if (needed > physEnd - physStart) continue;
+
+                    for (int p = physStart & ~3; p + needed <= physEnd; p += 4) {
+                        // Avoid the index buffer region itself
+                        if (p + needed > idxDataPhys - 8 && p < idxDataPhys + idxCount * 2) continue;
+
+                        // FULLY validate all vertices (not just samples) to avoid garbage hits
+                        boolean posOk;
+                        if (testStride == 12) {
+                            posOk = checkAllFloat3s(data, p, numV, physEnd);
+                        } else {
+                            posOk = checkAllInterleavedFloat3s(data, p, numV, testStride, physEnd);
+                        }
+                        if (!posOk) continue;
+
+                        float[] positions = (testStride == 12)
+                                ? readFloat3Array(data, p, numV)
+                                : readInterleavedPositions(data, p, numV, testStride);
+                        if (!hasSpatialExtent(positions, numV)) continue;
+
+                        FBox bounds = computeBounds(positions);
+                        // Reject implausibly large bounds – indicates wrong position data
+                        if (bounds.max().x() - bounds.min().x() > 2_000_000
+                                || bounds.max().y() - bounds.min().y() > 2_000_000
+                                || bounds.max().z() - bounds.min().z() > 2_000_000) continue;
+
+                        Umapica.LOGGER.info("[Umapica] UE3 '{}': BruteForce_s{} verts={} tris={} bounds={}",
+                                upkName, testStride, numV, idxCount / 3, bounds);
+                        int[] indices = readUint16Array(data, idxDataPhys, idxCount);
+                        UmapMeshData mesh = new UmapMeshData(positions, indices, bounds);
+                        mesh.sections = new UmapMeshData.Section[]{
+                                new UmapMeshData.Section(0, idxCount, 0, null)};
+                        return mesh;
+                    }
+                }
+            }
+        }
+
         // ── Diagnostic: scan for raw consecutive valid float3 triples ──────
         if (hexDumpCount < MAX_HEX_DUMPS) {
             hexDumpCount++;
@@ -739,6 +912,31 @@ public class UmapMeshLoader {
     // ── readMeshSimple helper methods ─────────────────────────────────────
 
     /** Spot-check first few + last few float3s are finite and in range. */
+    /**
+     * Validates ALL float3s in a contiguous position array (no sampling).
+     * More expensive than the sampled version; used in PASS 8 to eliminate garbage hits.
+     */
+    private static boolean checkAllFloat3s(byte[] data, int dataStart, int numV, int physEnd) {
+        if (dataStart + (long) numV * 12 > physEnd) return false;
+        for (int v = 0; v < numV; v++) {
+            if (!isValidFloat3(data, dataStart + v * 12)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Validates ALL float3s at stride-offset-0 in an interleaved vertex buffer (no sampling).
+     * Used in PASS 8 to eliminate garbage hits.
+     */
+    private static boolean checkAllInterleavedFloat3s(byte[] data, int dataStart,
+            int numV, int stride, int physEnd) {
+        if (dataStart + (long) numV * stride > physEnd) return false;
+        for (int v = 0; v < numV; v++) {
+            if (!isValidFloat3(data, dataStart + v * stride)) return false;
+        }
+        return true;
+    }
+
     private static boolean checkFloat3Range(byte[] data, int dataStart, int numV, int physEnd) {
         int sampled = Math.min(numV, 8);
         for (int v = 0; v < sampled; v++) {

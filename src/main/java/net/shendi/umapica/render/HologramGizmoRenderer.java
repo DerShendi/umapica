@@ -52,7 +52,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
                 case WIREFRAME     -> renderWireframe(h);
                 case VOXEL         -> renderVoxel(h);
                 case GHOST_MESH    -> renderGhostMesh(h, camX, camY, camZ, _maxDistSq);
-                case TEXTURED_MESH -> renderGhostMesh(h, camX, camY, camZ, _maxDistSq); // geometry outline; textured fill handled by HologramTexturedRenderer
+                case TEXTURED_MESH -> {} // fully handled by HologramTexturedRenderer
             }
         }
     }
@@ -94,18 +94,8 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
     private void renderGhostMesh(HologramInstance h, double camX, double camY, double camZ, double maxDistSq) {
         for (UmapActor actor : h.umap.actors) {
             UmapMeshData mesh = actor.meshData;
-            if (mesh != null && mesh.positions != null && mesh.positions.length >= 9 && mesh.indices.length >= 3) {
-                renderMesh(h, actor, mesh, camX, camY, camZ, maxDistSq);
-            } else {
-                // Fallback: outlined translucent bounding box
-                FBox wb = actor.worldBounds();
-                if (wb == null) continue;
-                AABB aabb  = toMcAABB(h, wb);
-                int  rgb   = actor.hintColor & 0x00FFFFFF;
-                int  stroke = 0xC0000000 | rgb;
-                int  fill   = 0x40000000 | rgb;
-                Gizmos.cuboid(aabb, GizmoStyle.strokeAndFill(stroke, 1.5f, fill));
-            }
+            if (mesh == null || mesh.positions == null || mesh.positions.length < 9 || mesh.indices.length < 3) continue;
+            renderMesh(h, actor, mesh, camX, camY, camZ, maxDistSq);
         }
     }
 
@@ -223,7 +213,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
      * Converts a mesh local-space vertex to a Minecraft world-space {@link Vec3}.
      * Full actor transform (scale → rotate → translate) and hologram global rotation are applied.
      */
-    private Vec3 localToMc(HologramInstance h,
+    public static Vec3 localToMc(HologramInstance h,
                             float lx, float ly, float lz,
                             double sx, double sy, double sz,
                             double tx, double ty, double tz,
@@ -248,7 +238,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
      * Rotates a UE-space point by the hologram's global rotation (rotX, rotY, rotZ).
      * Angles are in degrees; rotation order is Rx → Ry → Rz (extrinsic).
      */
-    private static double[] rotateUePoint(HologramInstance h, double x, double y, double z) {
+    public static double[] rotateUePoint(HologramInstance h, double x, double y, double z) {
         if (h.rotX == 0 && h.rotY == 0 && h.rotZ == 0) return new double[]{x, y, z};
         // --- Rotate around X ---
         double rx = Math.toRadians(h.rotX);
