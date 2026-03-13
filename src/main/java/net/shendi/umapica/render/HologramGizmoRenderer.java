@@ -152,6 +152,14 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
             double fcy = (va.y + vb.y + vc.y) / 3.0 - camY;
             double fcz = (va.z + vb.z + vc.z) / 3.0 - camZ;
             if (fcx*fcx + fcy*fcy + fcz*fcz > maxDistSq) continue;
+            // Backface culling in MC world space: skip triangle if its face normal
+            // points away from the camera (dot(normal, cam→centroid) > 0).
+            double eabx = vb.x-va.x, eaby = vb.y-va.y, eabz = vb.z-va.z;
+            double eacx = vc.x-va.x, eacy = vc.y-va.y, eacz = vc.z-va.z;
+            double mnx = eaby*eacz - eabz*eacy;
+            double mny = eabz*eacx - eabx*eacz;
+            double mnz = eabx*eacy - eaby*eacx;
+            if (mnx*fcx + mny*fcy + mnz*fcz > 0) continue;
             // Render as degenerate quad (triangle = a-b-c-c)
             Gizmos.rect(va, vb, vc, vc, style);
         }

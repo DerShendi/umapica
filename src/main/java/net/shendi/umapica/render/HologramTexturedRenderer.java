@@ -107,6 +107,13 @@ public final class HologramTexturedRenderer {
             double fcy = (va.y + vb.y + vc.y) / 3.0 - cam.y;
             double fcz = (va.z + vb.z + vc.z) / 3.0 - cam.z;
             if (fcx*fcx + fcy*fcy + fcz*fcz > maxDistSq) continue;
+            // Backface culling in MC world space
+            double eabx = vb.x-va.x, eaby = vb.y-va.y, eabz = vb.z-va.z;
+            double eacx = vc.x-va.x, eacy = vc.y-va.y, eacz = vc.z-va.z;
+            double mnx = eaby*eacz - eabz*eacy;
+            double mny = eabz*eacx - eabx*eacz;
+            double mnz = eabx*eacy - eaby*eacx;
+            if (mnx*fcx + mny*fcy + mnz*fcz > 0) continue;
 
             // Look up texture for this triangle's section
             Identifier texId = UmapTextureManager.getWhiteFallback();
