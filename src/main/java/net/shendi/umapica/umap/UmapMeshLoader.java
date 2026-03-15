@@ -542,8 +542,9 @@ public class UmapMeshLoader {
             int posDataEnd = dataStart + numV * 12;
             int[] idxResult = findFirstValidIndexBuffer(data, posDataEnd, physEnd, numV);
             if (idxResult == null) continue;
-
-            return buildMeshResult(positions, data, numV, idxResult, upkName, patternName);
+            // UVs may live in the FStaticMeshVertexBuffer that immediately follows
+            float[] uvs1 = tryParseUE3StaticMeshVB(data, posDataEnd, numV, physEnd);
+            return buildMeshResultWithUVs(positions, uvs1, data, numV, idxResult, upkName, patternName);
         }
 
         // ══════════════════ PASS 2: FStaticMeshVertexBuffer (full header) ════════════════
@@ -552,20 +553,21 @@ public class UmapMeshLoader {
         //   [numTexCoords:int32][stride:int32][numVerts:int32][bFullPrec:int32]
         //   [elemSize=stride:int32][count=numVerts:int32][vertex data]
         // Each vertex: float3 pos (12) + PackedNormal tangentX (4) + PackedNormal tangentZ (4)
-        //              + numTexCoords × UV (4 half or 8 full)
+        //              + optional FColor (4) + numTexCoords × UV (4 half or 8 full)
         for (int p = physStart & ~3; p <= physEnd - 32; p += 4) {
             int numTC   = ileInt32(data, p);       // numTexCoords: 1-8
             if (numTC < 1 || numTC > 8) continue;
-            int stride  = ileInt32(data, p + 4);   // stride: 24-80
-            if (stride < 24 || stride > 80 || (stride & 3) != 0) continue;
+            int stride  = ileInt32(data, p + 4);   // stride: 24-96
+            if (stride < 24 || stride > 96 || (stride & 3) != 0) continue;
             int numV    = ileInt32(data, p + 8);   // numVertices
             if (numV < 3 || numV > 500_000) continue;
-            int bFull   = ileInt32(data, p + 12);  // bUseFullPrecisionUVs
-            if (bFull != 0 && bFull != 1) continue;
+            int bFull   = ileInt32(data, p + 12);  // bUseFullPrecisionUVs (any non-zero = true)
+            bFull = bFull != 0 ? 1 : 0;
 
-            // Validate stride matches numTexCoords + bFullPrec
-            int expectedStride = 12 + 4 + 4 + numTC * (bFull == 1 ? 8 : 4);
-            if (stride != expectedStride) continue;
+            // Accept stride matching either without or with a per-vertex FColor (+4 bytes)
+            int expectedStride    = 12 + 4 + 4 + numTC * (bFull == 1 ? 8 : 4);
+            int expectedStrideCol = expectedStride + 4;
+            if (stride != expectedStride && stride != expectedStrideCol) continue;
 
             // Check BulkSerialize header follows
             if (p + 24 > physEnd) continue;
@@ -586,14 +588,44 @@ public class UmapMeshLoader {
             if (idxResult == null) continue;
 
             String patName = "FStaticMeshVB_tc" + numTC + "_s" + stride;
-            return buildMeshResult(positions, data, numV, idxResult, upkName, patName);
+            float[] uvs2 = extractUVsInterleavedUE3(data, dataStart, numV, stride, bFull == 1, stride == expectedStrideCol);
+            return buildMeshResultWithUVs(positions, uvs2, data, numV, idxResult, upkName, patName);
+        }
+
+        // ══════════════════ PASS 2b: FStaticMeshVertexBuffer WITHOUT BulkSerialize wrapper ════
+        // Some UE3 builds write [numTC][stride][numV][bFull] then vertex data directly,
+        // omitting the [elemSize][count] BulkSerialize header that PASS 2 requires.
+        for (int p = physStart & ~3; p <= physEnd - 20; p += 4) {
+            int numTC  = ileInt32(data, p);
+            if (numTC < 1 || numTC > 8) continue;
+            int stride = ileInt32(data, p + 4);
+            if (stride < 24 || stride > 96 || (stride & 3) != 0) continue;
+            int numV   = ileInt32(data, p + 8);
+            if (numV < 3 || numV > 500_000) continue;
+            int bFull  = ileInt32(data, p + 12);
+            bFull = bFull != 0 ? 1 : 0;
+            int expectedStride    = 12 + 4 + 4 + numTC * (bFull == 1 ? 8 : 4);
+            int expectedStrideCol = expectedStride + 4;
+            if (stride != expectedStride && stride != expectedStrideCol) continue;
+            long totalBytes = (long) numV * stride;
+            int dataStart = p + 16;
+            if (dataStart + totalBytes > physEnd) continue;
+            if (!checkInterleavedFloat3(data, dataStart, numV, stride, physEnd)) continue;
+            float[] positions = readInterleavedPositions(data, dataStart, numV, stride);
+            if (!hasSpatialExtent(positions, numV)) continue;
+            int vbEnd = (int)(dataStart + totalBytes);
+            int[] idxResult = findFirstValidIndexBuffer(data, vbEnd, physEnd, numV);
+            if (idxResult == null) continue;
+            String patName = "SMVB_direct_tc" + numTC + "_s" + stride;
+            float[] uvs2b = extractUVsInterleavedUE3(data, dataStart, numV, stride, bFull == 1, stride == expectedStrideCol);
+            return buildMeshResultWithUVs(positions, uvs2b, data, numV, idxResult, upkName, patName);
         }
 
         // ══════════════════ PASS 3: Interleaved BulkSerialize (bare) ═══════════════════════
         // [elemSize=S][count][data] where S > 12 and first 12 bytes per elem are positions
         for (int p = physStart & ~3; p <= physEnd - 32; p += 4) {
             int elemSize = ileInt32(data, p);
-            if (elemSize < 20 || elemSize > 80 || (elemSize & 3) != 0) continue;
+            if (elemSize < 20 || elemSize > 96 || (elemSize & 3) != 0) continue;
             int count = ileInt32(data, p + 4);
             if (count < 3 || count > 500_000) continue;
             long totalBytes = (long) count * elemSize;
@@ -616,7 +648,7 @@ public class UmapMeshLoader {
         // [stride=S][numV][elemSize=S][count=numV][data]
         for (int p = physStart & ~3; p <= physEnd - 32; p += 4) {
             int stride = ileInt32(data, p);
-            if (stride < 20 || stride > 80 || (stride & 3) != 0) continue;
+            if (stride < 20 || stride > 96 || (stride & 3) != 0) continue;
             int numV = ileInt32(data, p + 4);
             if (numV < 3 || numV > 500_000) continue;
             if (p + 16 > physEnd) continue;
@@ -695,16 +727,19 @@ public class UmapMeshLoader {
         }
 
         // ══════════════════ PASS 7: Interleaved FStaticMeshVB with TArray<BYTE> BulkSerialize ═══
-        // [numTC:1-8][stride:24-80][numV:3-500k][bFull:0|1][1][numV*stride][data]
+        // [numTC:1-8][stride:24-96][numV:3-500k][bFull:0|1][1][numV*stride][data]
         for (int p = physStart & ~3; p <= physEnd - 28; p += 4) {
             int numTC  = ileInt32(data, p);
             if (numTC < 1 || numTC > 8) continue;
             int stride = ileInt32(data, p + 4);
-            if (stride < 20 || stride > 80 || (stride & 3) != 0) continue;
+            if (stride < 20 || stride > 96 || (stride & 3) != 0) continue;
             int numV   = ileInt32(data, p + 8);
             if (numV < 3 || numV > 500_000) continue;
             int bFull  = ileInt32(data, p + 12);
-            if (bFull != 0 && bFull != 1) continue;
+            bFull = bFull != 0 ? 1 : 0;
+            int expectedStride7    = 12 + 4 + 4 + numTC * (bFull == 1 ? 8 : 4);
+            int expectedStrideCol7 = expectedStride7 + 4;
+            if (stride != expectedStride7 && stride != expectedStrideCol7) continue;
             // Require TArray<BYTE>::BulkSerialize: [1][numV*stride]
             if (ileInt32(data, p + 16) != 1) continue;
             long totalBytes = (long) numV * stride;
@@ -722,25 +757,31 @@ public class UmapMeshLoader {
             if (idxResult == null) continue;
 
             String patName = "SMVB_BS_tc" + numTC + "_s" + stride;
-            return buildMeshResult(positions, data, numV, idxResult, upkName, patName);
+            float[] uvs7 = extractUVsInterleavedUE3(data, dataStart, numV, stride, bFull == 1, stride == expectedStrideCol7);
+            return buildMeshResultWithUVs(positions, uvs7, data, numV, idxResult, upkName, patName);
         }
 
         // ══════════════ PASS 8: Index-first brute-force ════════════════════════════════
         // Scans for uint16 index buffers using TWO patterns:
         //   Pattern A: BulkSerialize  [elemSize=2][count][uint16*count]
         //   Pattern B: Bare TArray    [count][uint16*count]  (no elemSize prefix)
-        // For each candidate index buffer, searches the export for matching float3
-        // position data.  ALL vertices are fully validated (not sampled) and the
-        // resulting bounds are sanity-checked to reject garbage-data hits.
+        // Pattern A and B are collected into SEPARATE pools so that the far more
+        // numerous Pattern-B false positives (any int in [9..30000] divisible by 3)
+        // cannot crowd out a real Pattern-A hit that appears later in large exports.
+        // Pattern A is tried first; Pattern B is a secondary fallback.
         {
-            int[][] idxCandidates = new int[64][3]; // [dataPhys, count, maxIdx]
-            int numCandidates = 0;
+            // Pattern A: [2][n][data] — relatively rare in random binary, so allow up to 256
+            int[][] idxCandA = new int[256][3]; // [dataPhys, count, maxIdx]
+            int numCandA = 0;
+            // Pattern B: bare [n][data] — very noisy; limit to 64 as secondary attempt
+            int[][] idxCandB = new int[64][3];
+            int numCandB = 0;
 
-            for (int q = physStart & ~3; q <= physEnd - 8 && numCandidates < 64; q += 4) {
+            for (int q = physStart & ~3; q <= physEnd - 8; q += 4) {
                 // ── Pattern A: BulkSerialize [elemSize=2][count][data] ──────
-                if (ileInt32(data, q) == 2) {
+                if (numCandA < 256 && ileInt32(data, q) == 2) {
                     int n = ileInt32(data, q + 4);
-                    if (n >= 6 && n <= 2_000_000 && (n % 3) == 0
+                    if (n >= 9 && n <= 2_000_000 && (n % 3) == 0
                             && q + 8 + (long) n * 2 <= physEnd) {
                         int maxI = 0;
                         for (int i = 0; i < n; i++) {
@@ -748,18 +789,18 @@ public class UmapMeshLoader {
                             if (v > maxI) maxI = v;
                         }
                         if (maxI >= 2 && maxI < 500_000) {
-                            idxCandidates[numCandidates][0] = q + 8;
-                            idxCandidates[numCandidates][1] = n;
-                            idxCandidates[numCandidates][2] = maxI;
-                            numCandidates++;
+                            idxCandA[numCandA][0] = q + 8;
+                            idxCandA[numCandA][1] = n;
+                            idxCandA[numCandA][2] = maxI;
+                            numCandA++;
                         }
                     }
                 }
 
                 // ── Pattern B: Bare TArray [count][data] (no [2] prefix) ───
-                if (numCandidates < 64) {
+                if (numCandB < 64) {
                     int n = ileInt32(data, q);
-                    if (n >= 6 && n <= 30_000 && (n % 3) == 0
+                    if (n >= 9 && n <= 2_000_000 && (n % 3) == 0
                             && q + 4 + (long) n * 2 <= physEnd) {
                         int maxI = 0;
                         for (int i = 0; i < n; i++) {
@@ -768,29 +809,35 @@ public class UmapMeshLoader {
                         }
                         if (maxI >= 2 && maxI < 500_000) {
                             // Avoid duplicating a Pattern-A hit at the same data offset
-                            boolean alreadyFound = false;
-                            for (int ci = 0; ci < numCandidates; ci++) {
-                                if (idxCandidates[ci][0] == q + 4) { alreadyFound = true; break; }
+                            boolean alreadyFoundB = false;
+                            for (int ci = 0; ci < numCandA; ci++) {
+                                if (idxCandA[ci][0] == q + 4) { alreadyFoundB = true; break; }
                             }
-                            if (!alreadyFound) {
-                                idxCandidates[numCandidates][0] = q + 4;
-                                idxCandidates[numCandidates][1] = n;
-                                idxCandidates[numCandidates][2] = maxI;
-                                numCandidates++;
+                            if (!alreadyFoundB) {
+                                idxCandB[numCandB][0] = q + 4;
+                                idxCandB[numCandB][1] = n;
+                                idxCandB[numCandB][2] = maxI;
+                                numCandB++;
                             }
                         }
                     }
                 }
             }
 
-            for (int ci = 0; ci < numCandidates; ci++) {
+            // Merge: A candidates first, then B
+            int totalCand = numCandA + numCandB;
+            int[][] idxCandidates = new int[totalCand][3];
+            System.arraycopy(idxCandA, 0, idxCandidates, 0, numCandA);
+            System.arraycopy(idxCandB, 0, idxCandidates, numCandA, numCandB);
+
+            for (int ci = 0; ci < totalCand; ci++) {
                 int idxDataPhys = idxCandidates[ci][0];
                 int idxCount    = idxCandidates[ci][1];
                 int maxIdx      = idxCandidates[ci][2];
                 int numV        = maxIdx + 1;
 
                 // Search entire export for matching float3 positions
-                for (int testStride : new int[]{12, 24, 28, 20, 32, 36, 40, 44, 48}) {
+                for (int testStride : new int[]{12, 16, 20, 24, 28, 32, 36, 40, 44, 48}) {
                     long needed = (long) numV * testStride;
                     if (needed > physEnd - physStart) continue;
 
@@ -813,10 +860,28 @@ public class UmapMeshLoader {
                         if (!hasSpatialExtent(positions, numV)) continue;
 
                         FBox bounds = computeBounds(positions);
-                        // Reject implausibly large bounds – indicates wrong position data
-                        if (bounds.max().x() - bounds.min().x() > 2_000_000
-                                || bounds.max().y() - bounds.min().y() > 2_000_000
-                                || bounds.max().z() - bounds.min().z() > 2_000_000) continue;
+                        // Reject implausibly large per-axis extents (world-space data leaked in)
+                        double extX = bounds.max().x() - bounds.min().x();
+                        double extY = bounds.max().y() - bounds.min().y();
+                        double extZ = bounds.max().z() - bounds.min().z();
+                        if (extX > 100_000 || extY > 100_000 || extZ > 100_000) continue;
+                        // Reject if centroid is far from origin (world-space coordinates)
+                        double ctrX = (bounds.max().x() + bounds.min().x()) * 0.5;
+                        double ctrY = (bounds.max().y() + bounds.min().y()) * 0.5;
+                        double ctrZ = (bounds.max().z() + bounds.min().z()) * 0.5;
+                        if (Math.abs(ctrX) > 50_000 || Math.abs(ctrY) > 50_000 || Math.abs(ctrZ) > 50_000) continue;
+
+                        // Reject wireframe edge-pair buffers (>50% degenerate triangles)
+                        if (idxCount > 6) {
+                            int degCnt = 0;
+                            for (int t = 0; t + 2 < idxCount; t += 3) {
+                                int v0 = ileUInt16(data, idxDataPhys + t * 2);
+                                int v1 = ileUInt16(data, idxDataPhys + (t + 1) * 2);
+                                int v2 = ileUInt16(data, idxDataPhys + (t + 2) * 2);
+                                if (v0 == v1 || v1 == v2 || v0 == v2) degCnt++;
+                            }
+                            if (degCnt * 2 > idxCount / 3) continue;
+                        }
 
                         Umapica.LOGGER.info("[Umapica] UE3 '{}': BruteForce_s{} verts={} tris={} bounds={}",
                                 upkName, testStride, numV, idxCount / 3, bounds);
@@ -825,6 +890,125 @@ public class UmapMeshLoader {
                         mesh.sections = new UmapMeshData.Section[]{
                                 new UmapMeshData.Section(0, idxCount, 0, null)};
                         return mesh;
+                    }
+                }
+            }
+        }
+
+        // ══════════════ PASS 9: uint32 index-first brute-force ════════════════════════════
+        // Identical to PASS 8 but for 4-byte index elements.  Handles large meshes that
+        // exceed 65535 unique vertices (uint32 required) or builds whose FRawStaticIndexBuffer
+        // was serialised with TArray<uint32> instead of TArray<uint16>.
+        //   Pattern A9: BulkSerialize [elemSize=4][count][uint32*count]
+        //   Pattern B9: Bare TArray   [count][uint32*count]
+        {
+            int[][] idxCandA9 = new int[256][3];
+            int numCandA9 = 0;
+            int[][] idxCandB9 = new int[64][3];
+            int numCandB9 = 0;
+
+            for (int q = physStart & ~3; q <= physEnd - 8; q += 4) {
+                if (numCandA9 < 256 && ileInt32(data, q) == 4) {
+                    int n = ileInt32(data, q + 4);
+                    if (n >= 9 && n <= 2_000_000 && (n % 3) == 0
+                            && q + 8 + (long) n * 4 <= physEnd) {
+                        int maxI = 0; boolean valid = true;
+                        for (int i = 0; i < n; i++) {
+                            int v = ileInt32(data, q + 8 + i * 4);
+                            if (v < 0 || v >= 500_000) { valid = false; break; }
+                            if (v > maxI) maxI = v;
+                        }
+                        if (valid && maxI >= 2) {
+                            idxCandA9[numCandA9][0] = q + 8;
+                            idxCandA9[numCandA9][1] = n;
+                            idxCandA9[numCandA9][2] = maxI;
+                            numCandA9++;
+                        }
+                    }
+                }
+                if (numCandB9 < 64) {
+                    int n = ileInt32(data, q);
+                    if (n >= 9 && n <= 2_000_000 && (n % 3) == 0
+                            && q + 4 + (long) n * 4 <= physEnd) {
+                        int maxI = 0; boolean valid = true;
+                        for (int i = 0; i < n; i++) {
+                            int v = ileInt32(data, q + 4 + i * 4);
+                            if (v < 0 || v >= 500_000) { valid = false; break; }
+                            if (v > maxI) maxI = v;
+                        }
+                        if (valid && maxI >= 2) {
+                            boolean already = false;
+                            for (int ci = 0; ci < numCandA9; ci++) {
+                                if (idxCandA9[ci][0] == q + 4) { already = true; break; }
+                            }
+                            if (!already) {
+                                idxCandB9[numCandB9][0] = q + 4;
+                                idxCandB9[numCandB9][1] = n;
+                                idxCandB9[numCandB9][2] = maxI;
+                                numCandB9++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            int totalCand9 = numCandA9 + numCandB9;
+            int[][] idxCand9 = new int[totalCand9][3];
+            System.arraycopy(idxCandA9, 0, idxCand9, 0, numCandA9);
+            System.arraycopy(idxCandB9, 0, idxCand9, numCandA9, numCandB9);
+
+            for (int ci = 0; ci < totalCand9; ci++) {
+                int idxDataPhys9 = idxCand9[ci][0];
+                int idxCount9    = idxCand9[ci][1];
+                int maxIdx9      = idxCand9[ci][2];
+                int numV9        = maxIdx9 + 1;
+
+                for (int testStride : new int[]{12, 16, 20, 24, 28, 32, 36, 40, 44, 48}) {
+                    long needed9 = (long) numV9 * testStride;
+                    if (needed9 > physEnd - physStart) continue;
+
+                    for (int p = physStart & ~3; p + needed9 <= physEnd; p += 4) {
+                        if (p + needed9 > idxDataPhys9 - 8 && p < idxDataPhys9 + idxCount9 * 4) continue;
+
+                        boolean posOk9 = (testStride == 12)
+                                ? checkAllFloat3s(data, p, numV9, physEnd)
+                                : checkAllInterleavedFloat3s(data, p, numV9, testStride, physEnd);
+                        if (!posOk9) continue;
+
+                        float[] positions9 = (testStride == 12)
+                                ? readFloat3Array(data, p, numV9)
+                                : readInterleavedPositions(data, p, numV9, testStride);
+                        if (!hasSpatialExtent(positions9, numV9)) continue;
+
+                        FBox bounds9 = computeBounds(positions9);
+                        double extX9 = bounds9.max().x() - bounds9.min().x();
+                        double extY9 = bounds9.max().y() - bounds9.min().y();
+                        double extZ9 = bounds9.max().z() - bounds9.min().z();
+                        if (extX9 > 100_000 || extY9 > 100_000 || extZ9 > 100_000) continue;
+                        double ctrX9 = (bounds9.max().x() + bounds9.min().x()) * 0.5;
+                        double ctrY9 = (bounds9.max().y() + bounds9.min().y()) * 0.5;
+                        double ctrZ9 = (bounds9.max().z() + bounds9.min().z()) * 0.5;
+                        if (Math.abs(ctrX9) > 50_000 || Math.abs(ctrY9) > 50_000 || Math.abs(ctrZ9) > 50_000) continue;
+
+                        // Reject wireframe-like buffers (>50% degenerate triangles)
+                        if (idxCount9 > 6) {
+                            int deg9 = 0;
+                            for (int t = 0; t + 2 < idxCount9; t += 3) {
+                                int v0 = ileInt32(data, idxDataPhys9 + t * 4);
+                                int v1 = ileInt32(data, idxDataPhys9 + (t + 1) * 4);
+                                int v2 = ileInt32(data, idxDataPhys9 + (t + 2) * 4);
+                                if (v0 == v1 || v1 == v2 || v0 == v2) deg9++;
+                            }
+                            if (deg9 * 2 > idxCount9 / 3) continue;
+                        }
+
+                        Umapica.LOGGER.info("[Umapica] UE3 '{}': BruteForce32_s{} verts={} tris={} bounds={}",
+                                upkName, testStride, numV9, idxCount9 / 3, bounds9);
+                        int[] indices9 = readUint32Array(data, idxDataPhys9, idxCount9);
+                        UmapMeshData mesh9 = new UmapMeshData(positions9, indices9, bounds9);
+                        mesh9.sections = new UmapMeshData.Section[]{
+                                new UmapMeshData.Section(0, idxCount9, 0, null)};
+                        return mesh9;
                     }
                 }
             }
@@ -887,26 +1071,92 @@ public class UmapMeshLoader {
     /** Builds the final UmapMeshData from validated positions and index buffer result. */
     private static UmapMeshData buildMeshResult(float[] positions, byte[] data,
             int numV, int[] idxResult, String upkName, String patternName) {
+        return buildMeshResultWithUVs(positions, null, data, numV, idxResult, upkName, patternName);
+    }
+
+    /** Like {@link #buildMeshResult} but also sets {@code mesh.uvs} (trimmed to match verts). */
+    private static UmapMeshData buildMeshResultWithUVs(float[] positions, @Nullable float[] uvs,
+            byte[] data, int numV, int[] idxResult, String upkName, String patternName) {
         int idxDataPhys = idxResult[0], idxCount = idxResult[1], maxIdx = idxResult[2];
         int[] indices = readUint16Array(data, idxDataPhys, idxCount);
 
-        // Trim positions to max used vertex
+        // Trim positions (and UVs) to highest-referenced vertex
         int trueVerts = maxIdx + 1;
         if (trueVerts < numV) {
             float[] trimmed = new float[trueVerts * 3];
             System.arraycopy(positions, 0, trimmed, 0, trueVerts * 3);
             positions = trimmed;
+            if (uvs != null) {
+                float[] ut = new float[trueVerts * 2];
+                System.arraycopy(uvs, 0, ut, 0, Math.min(uvs.length, trueVerts * 2));
+                uvs = ut;
+            }
             numV = trueVerts;
         }
 
         FBox bounds = computeBounds(positions);
-        Umapica.LOGGER.info("[Umapica] UE3 '{}': {} verts={} tris={} bounds={}",
-                upkName, patternName, numV, idxCount / 3, bounds);
+        Umapica.LOGGER.info("[Umapica] UE3 '{}': {} verts={} tris={} uvs={} bounds={}",
+                upkName, patternName, numV, idxCount / 3, uvs != null ? "yes" : "no", bounds);
         UmapMeshData mesh = new UmapMeshData(positions, indices, bounds);
+        mesh.uvs = uvs;
         mesh.sections = new UmapMeshData.Section[]{
                 new UmapMeshData.Section(0, idxCount, 0, null)
         };
         return mesh;
+    }
+
+    /**
+     * Extracts UV channel 0 from a UE3 interleaved vertex buffer where each vertex is:
+     * [pos:12][tangentX:4][tangentZ:4][?FColor:4][UV0:4 half or 8 full][otherUVs...]
+     */
+    private static float[] extractUVsInterleavedUE3(byte[] data, int dataStart,
+            int numV, int stride, boolean fullUVs, boolean hasColor) {
+        int uvOff = 12 + 4 + 4 + (hasColor ? 4 : 0); // 20 (no color) or 24 (with color)
+        float[] uvs = new float[numV * 2];
+        for (int v = 0; v < numV; v++) {
+            int base = dataStart + v * stride + uvOff;
+            float u, vv;
+            if (fullUVs) {
+                u  = ileFloat(data, base);
+                vv = ileFloat(data, base + 4);
+            } else {
+                u  = halfToFloat(ileUInt16(data, base));
+                vv = halfToFloat(ileUInt16(data, base + 2));
+            }
+            uvs[v * 2]     = u;
+            uvs[v * 2 + 1] = vv;
+        }
+        return uvs;
+    }
+
+    /**
+     * Tries to parse a UE3 {@code FStaticMeshVertexBuffer} header at {@code offset} and
+     * extract UV channel 0.  Used in PASS 1 where a separate {@code FPositionVertexBuffer}
+     * precedes the UV buffer.  Returns {@code null} if validation fails.
+     */
+    private static @Nullable float[] tryParseUE3StaticMeshVB(byte[] data, int offset,
+            int expectedVerts, int physEnd) {
+        try {
+            if (offset < 0 || offset + 24 > physEnd) return null;
+            int numTC  = ileInt32(data, offset);
+            if (numTC < 1 || numTC > 8) return null;
+            int stride = ileInt32(data, offset + 4);
+            if (stride < 24 || stride > 96 || (stride & 3) != 0) return null;
+            int numV   = ileInt32(data, offset + 8);
+            if (numV != expectedVerts) return null;
+            int bFull  = ileInt32(data, offset + 12) != 0 ? 1 : 0;
+            int expected    = 12 + 4 + 4 + numTC * (bFull == 1 ? 8 : 4);
+            boolean hasColor = (stride == expected + 4);
+            if (stride != expected && !hasColor) return null;
+            // BulkSerialize header: [elemSize=stride][count=numV]
+            int elemSz = ileInt32(data, offset + 16);
+            int count  = ileInt32(data, offset + 20);
+            if (elemSz != stride || count != numV) return null;
+            long totalBytes = (long) numV * stride;
+            int  dataStart  = offset + 24;
+            if (dataStart + totalBytes > physEnd) return null;
+            return extractUVsInterleavedUE3(data, dataStart, numV, stride, bFull == 1, hasColor);
+        } catch (Exception e) { return null; }
     }
 
     // ── readMeshSimple helper methods ─────────────────────────────────────
@@ -1017,6 +1267,15 @@ public class UmapMeshLoader {
         return arr;
     }
 
+    /** Reads numIdx × uint32 from a byte array starting at offset (stored as signed int, safe for values < 2^31). */
+    private static int[] readUint32Array(byte[] data, int offset, int numIdx) {
+        int[] arr = new int[numIdx];
+        for (int i = 0; i < numIdx; i++) {
+            arr[i] = ileInt32(data, offset + i * 4);
+        }
+        return arr;
+    }
+
     /** Returns true if the position array has non-trivial spatial extent in at least one axis. */
     private static boolean hasSpatialExtent(float[] positions, int numVerts) {
         if (numVerts < 2) return false;
@@ -1047,6 +1306,12 @@ public class UmapMeshLoader {
         // Allow generous search window past position data (vertex buffer + optional colour buffer)
         int limit = (int) Math.min((long) searchEnd,
                 (long) searchStart + (long) numVerts * 80 + 65536);
+
+        // ── PHASE 1: BulkSerialize and FBulkData patterns ────────────────────
+        // UE3 FRawStaticIndexBuffer::Serialize always writes [int32=2][count][uint16*count].
+        // Patterns 3/4 require sizeOnDisk == elemCnt*2 which is also highly specific.
+        // These have very low false-positive rates even inside tangent/UV vertex data,
+        // so we scan the entire range with these patterns first.
         for (int q = searchStart & ~3; q <= limit - 8; q += 4) {
             // Pattern 1: BulkSerialize   int32(2) + int32(count) + count × uint16
             if (ileInt32(data, q) == 2) {
@@ -1056,13 +1321,6 @@ public class UmapMeshLoader {
                     int[] r = validateIndexBuffer(data, q + 8, n, numVerts);
                     if (r != null) return r;
                 }
-            }
-            // Pattern 2: Direct TArray   int32(count) + count × uint16
-            int n = ileInt32(data, q);
-            if (n >= 3 && n <= 1_000_000 && (n % 3) == 0
-                    && q + 4 + (long) n * 2 <= searchEnd) {
-                int[] r = validateIndexBuffer(data, q + 4, n, numVerts);
-                if (r != null) return r;
             }
             // Pattern 3: FBulkData with int32 offset
             // [flags][elemCnt][sizeOnDisk=elemCnt*2][offset(4)][data]
@@ -1093,23 +1351,48 @@ public class UmapMeshLoader {
                 }
             }
         }
+
+        // ── PHASE 2: Bare TArray [count][uint16*count] – fallback only ────────
+        // This pattern has a high false-positive rate: a 4-byte value that happens
+        // to be a valid count can appear anywhere inside FStaticMeshVertexBuffer's
+        // packed tangent/UV data, producing wrong-corner triangles.  Only attempt
+        // this if Phase 1 found nothing valid.
+        for (int q = searchStart & ~3; q <= limit - 8; q += 4) {
+            int n = ileInt32(data, q);
+            if (n >= 3 && n <= 1_000_000 && (n % 3) == 0
+                    && q + 4 + (long) n * 2 <= searchEnd) {
+                int[] r = validateIndexBuffer(data, q + 4, n, numVerts);
+                if (r != null) return r;
+            }
+        }
+
         return null;
     }
 
     /**
-     * Validates a candidate uint16 index buffer: every index must be &lt; numVerts
-     * and at least 3 distinct vertices must be referenced.
+     * Validates a candidate uint16 index buffer: every index must be &lt; numVerts,
+     * at least 3 distinct vertex indices must appear, and fewer than half of the
+     * triangles may be degenerate (same vertex twice), filtering out UE3 wireframe
+     * edge-pair buffers that come before the real render index buffer in the stream.
      * Returns {@code int[]{dataPhys, count, maxIndex}} on success, {@code null} otherwise.
      */
     private static int @Nullable [] validateIndexBuffer(byte[] data, int dataPhys,
                                                          int count, int numVerts) {
-        int maxIdx = 0;
+        int maxIdx = 0, degenTris = 0, totalTris = 0;
         for (int i = 0; i < count; i++) {
             int v = ileUInt16(data, dataPhys + i * 2);
             if (v >= numVerts) return null;
             if (v > maxIdx) maxIdx = v;
+            if (i % 3 == 2) {
+                int v0 = ileUInt16(data, dataPhys + (i - 2) * 2);
+                int v1 = ileUInt16(data, dataPhys + (i - 1) * 2);
+                if (v0 == v1 || v1 == v || v0 == v) degenTris++;
+                totalTris++;
+            }
         }
         if (maxIdx < 2) return null;
+        // Reject if >50% of triangles are degenerate (wireframe edge-pair pattern)
+        if (totalTris > 4 && degenTris * 2 > totalTris) return null;
         return new int[]{dataPhys, count, maxIdx};
     }
 

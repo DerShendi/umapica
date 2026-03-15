@@ -67,9 +67,8 @@ public class UmapicaScreen extends Screen {
     private EditBox scaleBox;
     private Button  modeButton, visButton, setPlayerButton, loadMeshButton, removeButton;
     private EditBox xBox, yBox, zBox;
-    private EditBox assetPathBox;
-    private Button  addAssetPathButton, clearAssetPathsButton;
     private AbstractSliderButton renderDistSlider;
+    private AbstractSliderButton faceLimitSlider;
 
     // ── Status bar ────────────────────────────────────────────────────
     private String statusMsg    = "";
@@ -199,21 +198,19 @@ public class UmapicaScreen extends Screen {
         addRenderableWidget(renderDistSlider);
         cy += 22;
 
-        // ── Asset Search Path ────────────────────────────────────────── //
-        // Show number of configured paths; EditBox to add a new one
-        assetPathBox = new EditBox(font, ctrlX, cy + 2, width - ctrlX - 56, 14,
-                Component.literal("asset dir path"));
-        assetPathBox.setMaxLength(512);
-        assetPathBox.setHint(Component.literal("Game CookedPC path..."));
-        addRenderableWidget(assetPathBox);
-        addAssetPathButton = Button.builder(Component.literal("Add"),
-                btn -> addAssetPath())
-                .bounds(width - 54, cy, 26, 18).build();
-        addRenderableWidget(addAssetPathButton);
-        clearAssetPathsButton = Button.builder(Component.literal("Clr"),
-                btn -> clearAssetPaths())
-                .bounds(width - 26, cy, 24, 18).build();
-        addRenderableWidget(clearAssetPathsButton);
+        // ── Face cap slider ──────────────────────────────────────────────── //
+        faceLimitSlider = new AbstractSliderButton(ctrlX, cy, 162, 18,
+                Component.empty(),
+                facesToSlider(Config.FACE_LIMIT.get())) {
+            @Override protected void updateMessage() {
+                setMessage(Component.literal(sliderToFacesLabel(this.value)));
+            }
+            @Override protected void applyValue() {
+                Config.FACE_LIMIT.set(sliderToFaces(this.value));
+            }
+        };
+        addRenderableWidget(faceLimitSlider);
+        cy += 22;
 
         refreshFiles();
         updateControls();
@@ -330,12 +327,6 @@ public class UmapicaScreen extends Screen {
 
         // (slider is self-labelled with distance value)
 
-        // Asset paths label
-        if (assetPathBox != null) {
-            g.drawString(font, "Asset path(s): " + Config.ASSET_SEARCH_PATHS.get().size() + " set",
-                    ctrlX, assetPathBox.getY() - 11, 0xAAAAAA);
-        }
-
         // ── Status bar ────────────────────────────────────────────────
         if (!statusMsg.isEmpty() && System.currentTimeMillis() < statusExpiry) {
             g.drawCenteredString(font, statusMsg, width / 2, height - 12, 0xFFFF88);
@@ -393,6 +384,22 @@ public class UmapicaScreen extends Screen {
     private static int sliderToBlocks(double value) {
         int max = Config.MAX_RENDER_DISTANCE.get();
         return Math.clamp((int) Math.round(value * (max - 16) + 16), 16, max);
+    }
+
+    /** Maps slider [0,1] to face cap: 1.0 → unlimited (0), otherwise 1000..2_000_000. */
+    private static int sliderToFaces(double value) {
+        if (value > 0.999) return 0;
+        return Math.max(1000, (int) (value * 2_000_000));
+    }
+
+    private static String sliderToFacesLabel(double value) {
+        int faces = sliderToFaces(value);
+        return faces == 0 ? "Face cap: Unlimited" : "Face cap: " + faces;
+    }
+
+    /** Maps a stored face-cap int back to a slider [0,1] position. */
+    private static double facesToSlider(int faces) {
+        return faces <= 0 ? 1.0 : Math.max(0.0, Math.min(0.999, faces / 2_000_000.0));
     }
 
     private void refreshFiles() {
@@ -582,10 +589,8 @@ public class UmapicaScreen extends Screen {
             }
         }
 
-        // Explicit user-configured paths
-        for (String p : Config.ASSET_SEARCH_PATHS.get()) {
-            addIfDir(dirs, new File(p));
-        }
+        // Include the source .umap file itself – Hat in Time textures are baked in
+        if (h.umap.file != null && h.umap.file.isFile()) dirs.add(h.umap.file);
         return dirs.toArray(new File[0]);
     }
 
@@ -599,29 +604,6 @@ public class UmapicaScreen extends Screen {
         selected = null;
         updateControls();
         setStatus("Hologram removed");
-    }
-
-    private void addAssetPath() {
-        if (assetPathBox == null) return;
-        String path = assetPathBox.getValue().trim();
-        if (path.isEmpty()) return;
-        File dir = new File(path);
-        if (!dir.isDirectory()) { setStatus("Not a valid directory: " + path); return; }
-        List<String> current = new ArrayList<>(Config.ASSET_SEARCH_PATHS.get().stream()
-                .map(Object::toString).toList());
-        if (!current.contains(path)) {
-            current.add(path);
-            Config.ASSET_SEARCH_PATHS.set(current);
-            Config.ASSET_SEARCH_PATHS.save();
-        }
-        assetPathBox.setValue("");
-        setStatus("Added asset path: " + dir.getName() + " (" + current.size() + " total)");
-    }
-
-    private void clearAssetPaths() {
-        Config.ASSET_SEARCH_PATHS.set(List.of());
-        Config.ASSET_SEARCH_PATHS.save();
-        setStatus("Asset search paths cleared");
     }
 
     private void adjustScale(double factor) {

@@ -35,11 +35,25 @@ public final class UmapTextureManager {
     private static final int PF_DXT5     = 11;
     private static final int PF_B8G8R8A8 = 4;
 
-    /** cache: texture uasset absolute path  → Minecraft Identifier */
+    /** cache: texture uasset absolute path (or "file#token")  → Minecraft Identifier */
     private static final Map<String, Identifier> CACHE = new ConcurrentHashMap<>();
 
     /** Dummy white texture used as a fallback when loading fails. */
     private static volatile Identifier WHITE_FALLBACK = null;
+
+    /**
+     * Cached decompressed + export-indexed UE3 package (for .upk and .umap files).
+     * Keyed by absolute file path.  Reuse across multiple material-name queries so
+     * a 40 MB decompressed .umap is only inflated once per session.
+     */
+    private record UE3PkgInfo(ByteArrayUmapReader br,
+                               long[]   expOff,
+                               long[]   expSz,
+                               String[] expCls,
+                               String[] expName,
+                               File     pkgFile) {}
+    private static final ConcurrentHashMap<String, UE3PkgInfo> UE3_PKG_INFO
+            = new ConcurrentHashMap<>();
 
     private UmapTextureManager() {}
 
@@ -99,54 +113,73 @@ public final class UmapTextureManager {
     //  Internal helpers
     // ------------------------------------------------------------------ //
 
-    private static Identifier tryLoadFromDir(File dir, String materialName) {
-        // Build a set of candidate search tokens from the material name:
-        //   "M_BuildingBrick"  → ["m_buildingbrick", "buildingbrick"]
-        //   "MI_Rock_001"      → ["mi_rock_001",     "rock_001"]
-        //   "T_Grass_D"        → ["t_grass_d",        "grass_d"]
-        // We search for any .uasset whose filename CONTAINS at least one token.
+    /** Builds the list of search tokens for a material name. */
+    private static List<String> buildTokenList(String materialName) {
         String safe = materialName.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase(Locale.ROOT);
         List<String> tokens = new ArrayList<>();
         tokens.add(safe);
-        // Strip common material/texture prefix (M_, MI_, T_)
-        if (safe.startsWith("m_")) {
-            tokens.add(safe.substring(2));
-        } else if (safe.startsWith("mi_")) {
-            tokens.add(safe.substring(3));
-        } else if (safe.startsWith("t_")) {
-            tokens.add(safe.substring(2));
-        }
+        if      (safe.startsWith("m_"))  tokens.add(safe.substring(2));
+        else if (safe.startsWith("mi_")) tokens.add(safe.substring(3));
+        else if (safe.startsWith("t_"))  tokens.add(safe.substring(2));
+        return tokens;
+    }
 
+    private static Identifier tryLoadFromDir(File dir, String materialName) {
+        List<String> tokens = buildTokenList(materialName);
+        String safe     = tokens.get(0);
         String cacheKey = dir.getAbsolutePath() + "/" + safe;
         Identifier cached = CACHE.get(cacheKey);
         if (cached != null) return cached;
 
-        // Search recursively for any .uasset matching one of our tokens
+        // ── Handle UE3 package FILES passed directly (e.g. source .umap) ──────
+        if (!dir.isDirectory()) {
+            if (dir.isFile()) {
+                String ln = dir.getName().toLowerCase(Locale.ROOT);
+                if (ln.endsWith(".upk") || ln.endsWith(".umap")) {
+                    UE3PkgInfo info = getUE3PkgInfo(dir);
+                    if (info != null) {
+                        Identifier rl = loadTexFromUE3Pkg(info, tokens);
+                        if (rl != null) { CACHE.put(cacheKey, rl); return rl; }
+                    }
+                }
+            }
+            return null;
+        }
+
+        // ── Search for UE4 .uasset by filename ───────────────────────────────
         File found = findUassetRecursive(dir, tokens, 8);
         if (found != null) {
             try {
                 Identifier rl = loadTextureAsset(found);
-                if (rl != null) {
-                    CACHE.put(cacheKey, rl);
-                    return rl;
-                }
-                Umapica.LOGGER.debug("[Umapica] Found '{}' but it is not a Texture2D (maybe a Material?)", found.getName());
+                if (rl != null) { CACHE.put(cacheKey, rl); return rl; }
+                Umapica.LOGGER.debug("[Umapica] Found '{}' but it is not a Texture2D", found.getName());
             } catch (Exception e) {
                 Umapica.LOGGER.debug("[Umapica] Texture parse failed {}: {}", found.getName(), e.getMessage());
             }
         }
 
-        // Also search for UE3 .upk texture packages
+        // ── Search for UE3 .upk by filename ─────────────────────────────────
         File foundUpk = findUpkRecursive(dir, tokens, 8);
         if (foundUpk != null) {
-            try {
-                Identifier rl2 = loadUE3TextureAsset(foundUpk, tokens.get(0));
-                if (rl2 != null) {
-                    CACHE.put(cacheKey, rl2);
-                    return rl2;
-                }
-            } catch (Exception e) {
-                Umapica.LOGGER.debug("[Umapica] UE3 upk tex failed {}: {}", foundUpk.getName(), e.getMessage());
+            UE3PkgInfo info = getUE3PkgInfo(foundUpk);
+            if (info != null) {
+                Identifier rl2 = loadTexFromUE3Pkg(info, tokens);
+                if (rl2 != null) { CACHE.put(cacheKey, rl2); return rl2; }
+            }
+        }
+
+        // ── Broad fallback: search ALL .upk files at depth-1 of this dir ─────
+        // Skips very large files (e.g. Startup.upk at 221 MB) to avoid OOM.
+        File[] all = dir.listFiles(f -> f.isFile()
+                && f.getName().toLowerCase(Locale.ROOT).endsWith(".upk")
+                && f.length() < 100_000_000L);
+        if (all != null) {
+            for (File upk : all) {
+                if (upk.equals(foundUpk)) continue; // already tried above
+                UE3PkgInfo info = getUE3PkgInfo(upk);
+                if (info == null) continue;
+                Identifier rl = loadTexFromUE3Pkg(info, tokens);
+                if (rl != null) { CACHE.put(cacheKey, rl); return rl; }
             }
         }
         return null;
@@ -391,42 +424,40 @@ public final class UmapTextureManager {
         }
     }
 
-    /**
-     * Loads a texture from a UE3 {@code .upk} file. Searches the package for a
-     * Texture2D export whose name contains {@code tokenHint}, then decodes the
-     * first inline mip and registers it as a DynamicTexture.
-     */
-    @SuppressWarnings("unused")
-    private static Identifier loadUE3TextureAsset(File upk, String tokenHint) throws IOException {
-        String cacheKey = upk.getAbsolutePath() + "#" + tokenHint;
-        Identifier cached = CACHE.get(cacheKey);
-        if (cached != null) return cached;
+    // ------------------------------------------------------------------ //
+    //  UE3 package parsing + texture loading (replaces old loadUE3TextureAsset)
+    // ------------------------------------------------------------------ //
 
-        try (UmapReader r = new UmapReader(upk)) {
+    /**
+     * Decompresses and parses the export table of a UE3 {@code .upk} or {@code .umap}.
+     * Result is cached so a 40 MB .umap is decompressed only once per session.
+     * Returns {@code null} if the file is not a valid UE3 package or is too large
+     * to fit in the 256 MB safety limit.
+     */
+    private static @org.jetbrains.annotations.Nullable UE3PkgInfo getUE3PkgInfo(File pkg) {
+        String key = pkg.getAbsolutePath();
+        UE3PkgInfo cached2 = UE3_PKG_INFO.get(key);
+        if (cached2 != null) return cached2;
+        try (UmapReader r = new UmapReader(pkg)) {
             long magic = r.readUInt32();
             if (magic != 0x9E2A83C1L) return null;
-
-            int fileVersion   = r.readInt32();
-            r.readInt32(); // licenseeVersion
-            if (fileVersion >= 0) return null; // UE4 .uasset handled elsewhere
+            int fileVersion = r.readInt32();
+            r.readInt32();   // "licenseeVersion" slot (actually totalHdrSize in Hat in Time)
+            if (fileVersion < 0) return null; // UE4 format – handled by loadTextureAsset
             r.readFString(); // folderName
             r.readInt32();   // packageFlags
-
-            int  nameCount   = r.readInt32(); long nameOff   = r.readUInt32();
-            int  exportCount = r.readInt32(); long exportOff = r.readUInt32();
-            int  importCount = r.readInt32(); long importOff = r.readUInt32();
-
-            r.readInt32(); r.readInt32(); // dependsOffset, softPkgRefsOffset
-            r.skipBytes(12);             // 3 × padding ints
-            r.skipFGuid();               // package GUID
-            int genCount = r.readInt32();
-            for (int g = 0; g < genCount; g++) { r.readInt32(); r.readInt32(); }
-            r.readInt32(); r.readInt32(); r.readInt32(); // EngineVersion, CookerVersion, PackageSource
-
+            int nc = r.readInt32(); long nameOff  = r.readUInt32();
+            int ec = r.readInt32(); long exportOff = r.readUInt32();
+            int ic = r.readInt32(); long importOff = r.readUInt32();
+            r.readInt32(); r.readInt32();  // dependsOffset, softPkgRefsOffset
+            r.skipBytes(12); r.skipFGuid();
+            int gc = r.readInt32();
+            for (int g = 0; g < gc; g++) { r.readInt32(); r.readInt32(); }
+            r.readInt32(); r.readInt32(); r.readInt32(); // EngineVersion, CookerVersion, PkgSource
             int compressionFlags = r.readInt32();
             int chunkCount       = r.readInt32();
 
-            // ── Decompress or read raw ─────────────────────────────────────────
+            // ── Decompress LZO chunks, or use raw bytes ──────────────────────
             ByteArrayUmapReader br;
             if (compressionFlags != 0 && chunkCount > 0) {
                 long[] uncompOff = new long[chunkCount], uncompSz = new long[chunkCount];
@@ -437,16 +468,18 @@ public final class UmapTextureManager {
                 }
                 long totalDecomp = 0;
                 for (long sz : uncompSz) totalDecomp += sz;
+                if (totalDecomp > 256L * 1024 * 1024) {
+                    Umapica.LOGGER.debug("[Umapica] Skipping {} – decompressed size {} MB exceeds 256 MB limit",
+                            pkg.getName(), totalDecomp / (1024 * 1024));
+                    return null;
+                }
                 byte[] decompData = new byte[(int) totalDecomp];
                 int destOff = 0;
                 for (int c = 0; c < chunkCount; c++) {
                     r.seek(compOff[c]);
                     long magic2 = r.readUInt32();
-                    if (magic2 != 0x9E2A83C1L)
-                        throw new IOException("UE3 LZO bad magic at chunk " + c);
-                    int blockSize   = r.readInt32();
-                    r.readInt32(); // compTotal
-                    int uncompTotal = r.readInt32();
+                    if (magic2 != 0x9E2A83C1L) throw new IOException("UE3 LZO bad magic at chunk " + c);
+                    int blockSize = r.readInt32(); r.readInt32(); int uncompTotal = r.readInt32();
                     if (blockSize <= 0) blockSize = 131072;
                     int numSub = (uncompTotal + blockSize - 1) / blockSize;
                     int[] subComp = new int[numSub], subUncomp = new int[numSub];
@@ -462,182 +495,207 @@ public final class UmapTextureManager {
                 br = new ByteArrayUmapReader(decompData, uncompOff[0]);
             } else {
                 r.seek(0);
-                byte[] raw = r.readBytes((int) upk.length());
+                if (pkg.length() > 256L * 1024 * 1024) return null;
+                byte[] raw = r.readBytes((int) pkg.length());
                 br = new ByteArrayUmapReader(raw, 0L);
             }
             br.fileVersionUE4 = fileVersion;
 
-            // ── Name table ────────────────────────────────────────────────────
+            // ── Name table ───────────────────────────────────────────────────
             br.seek(nameOff);
-            String[] names = new String[nameCount];
-            for (int i = 0; i < nameCount; i++) names[i] = br.readUE3Name();
+            String[] names = new String[nc];
+            for (int i = 0; i < nc; i++) names[i] = br.readUE3Name();
             br.names = names;
 
-            // ── Export table ──────────────────────────────────────────────────
+            // ── Import table (for class name resolution) ─────────────────────
+            br.seek(importOff);
+            String[] impNames = new String[ic];
+            for (int i = 0; i < ic; i++) {
+                br.readFName(); br.readFName(); br.readInt32(); impNames[i] = br.readFName();
+            }
+
+            // ── Export table ─────────────────────────────────────────────────
             br.seek(exportOff);
-            long[]   expOffsets    = new long[exportCount];
-            long[]   expSizes      = new long[exportCount];
-            String[] expNames      = new String[exportCount];
-            String[] expClassNames = new String[exportCount];
-            int[]    expClassIdx   = new int[exportCount];
-            for (int i = 0; i < exportCount; i++) {
+            long[]   expOffs     = new long[ec];
+            long[]   expSzs      = new long[ec];
+            String[] expNames    = new String[ec];
+            String[] expClsNames = new String[ec];
+            int[]    expClsIdx   = new int[ec];
+            for (int i = 0; i < ec; i++) {
                 int classIdx = br.readInt32();
                 br.readInt32(); br.readInt32(); // superIndex, outerIndex
                 String objName = br.readFName();
                 br.readInt32(); // archetypeIndex
                 br.readInt64(); // objectFlags
-                long serialSize   = br.readInt32() & 0xFFFFFFFFL;
-                long serialOffset = br.readInt32() & 0xFFFFFFFFL;
+                long sz  = br.readInt32() & 0xFFFFFFFFL;
+                long off = br.readInt32() & 0xFFFFFFFFL;
                 br.readInt32(); // exportFlags
-                int gc = br.readInt32();
-                for (int g = 0; g < gc; g++) br.readInt32();
+                int gcnt = br.readInt32();
+                for (int g = 0; g < gcnt; g++) br.readInt32();
                 br.skipFGuid();
                 br.readInt32(); // packageFlags
-                expOffsets[i]  = serialOffset;
-                expSizes[i]    = serialSize;
-                expNames[i]    = objName;
-                expClassIdx[i] = classIdx;
+                expOffs[i] = off;  expSzs[i]  = sz;
+                expNames[i] = objName;  expClsIdx[i] = classIdx;
+            }
+            for (int i = 0; i < ec; i++) {
+                int ci = expClsIdx[i];
+                if      (ci < 0) { int ii = -ci - 1; expClsNames[i] = (ii < ic) ? impNames[ii] : "?"; }
+                else if (ci > 0) { int ei = ci - 1;  expClsNames[i] = (ei < ec) ? expNames[ei] : "?"; }
+                else             { expClsNames[i] = "Class"; }
             }
 
-            // ── Import table: resolve class names ─────────────────────────────
-            br.seek(importOff);
-            String[] impNames = new String[importCount];
-            for (int i = 0; i < importCount; i++) {
-                br.readFName(); br.readFName(); br.readInt32();
-                impNames[i] = br.readFName();
-            }
-            for (int i = 0; i < exportCount; i++) {
-                int ci = expClassIdx[i];
-                if (ci < 0)      { int ii = -ci - 1; expClassNames[i] = (ii < importCount) ? impNames[ii] : "?"; }
-                else if (ci > 0) { int ei = ci - 1;  expClassNames[i] = (ei < exportCount) ? expNames[ei] : "?"; }
-                else             { expClassNames[i] = "Class"; }
-            }
-
-            // ── Find Texture2D export matching tokenHint ──────────────────────
-            long texOff = -1, texSz = -1;
-            String texExportName = null;
-            for (int i = 0; i < exportCount; i++) {
-                if (!expClassNames[i].equalsIgnoreCase("Texture2D")) continue;
-                String en = expNames[i] == null ? "" : expNames[i].toLowerCase(Locale.ROOT);
-                if (!en.contains(tokenHint.toLowerCase(Locale.ROOT))) continue;
-                texOff = expOffsets[i];
-                texSz  = expSizes[i];
-                texExportName = expNames[i];
-                break;
-            }
-            // Fallback: any Texture2D export
-            if (texOff < 0) {
-                for (int i = 0; i < exportCount; i++) {
-                    if (!expClassNames[i].equalsIgnoreCase("Texture2D")) continue;
-                    if (expSizes[i] < 64) continue;
-                    texOff = expOffsets[i];
-                    texSz  = expSizes[i];
-                    texExportName = expNames[i];
-                    break;
-                }
-            }
-            if (texOff < 0) return null;
-
-            // ── Parse Texture2D property list ─────────────────────────────────
-            br.seek(texOff);
-            long endPos = texOff + texSz;
-            int sizeX = 0, sizeY = 0;
-            String format = "";
-            while (br.position() < endPos - 8) {
-                String propName = br.readFName();
-                if (propName == null || propName.equals("None")) break;
-                String propType = br.readFName();
-                long propSz     = br.readInt32() & 0xFFFFFFFFL;
-                br.readInt32(); // arrayIndex
-                if ("BoolProperty".equals(propType)) { br.readByte(); propSz = 0; }
-                else if ("ByteProperty".equals(propType)) { br.readFName(); }
-                long after = br.position() + propSz;
-                switch (propName) {
-                    case "SizeX"  -> sizeX  = br.readInt32();
-                    case "SizeY"  -> sizeY  = br.readInt32();
-                    case "Format" -> {
-                        // ByteProperty enum: the value is already read (readFName above reads the enum type name)
-                        // The actual string enum value comes from readFName
-                        format = after > br.position() ? br.readFName() : format;
-                        if (format == null) format = "";
-                    }
-                    default -> { /* skip */ }
-                }
-                if (br.position() < after) br.seek(after);
-            }
-
-            if (sizeX <= 0 || sizeY <= 0 || sizeX > 8192 || sizeY > 8192) return null;
-
-            // ── Parse mip array (TLazyArray) ──────────────────────────────────
-            if (br.position() + 8 > endPos) return null;
-            br.readInt32();            // TLazyArray skip-offset
-            int numMips = br.readInt32();
-            if (numMips <= 0 || numMips > 16) return null;
-
-            byte[] mipData = null;
-            int mipW = 0, mipH = 0;
-            for (int m = 0; m < numMips && br.position() < endPos - 16; m++) {
-                int  bulkFlags  = br.readInt32();
-                int  elemCount  = br.readInt32(); // byte count for DXT data
-                int  sizeOnDisk = br.readInt32();
-                br.readInt32(); // bulkOffset in file
-                int mwi = br.readInt32();
-                int mhi = br.readInt32();
-                if (elemCount > 0 && sizeOnDisk > 0 && sizeOnDisk <= 4 * 1024 * 1024
-                        && mwi > 0 && mhi > 0) {
-                    mipData = br.readBytes(sizeOnDisk);
-                    mipW    = mwi;
-                    mipH    = mhi;
-                    break;
-                } else if (sizeOnDisk > 0 && sizeOnDisk < 33554432 /* 32 MB */) {
-                    br.skipBytes(sizeOnDisk); // skip inline but too-large mip
-                }
-            }
-            if (mipData == null || mipW <= 0 || mipH <= 0) {
-                Umapica.LOGGER.debug("[Umapica] UE3 tex {} in {}: no inline mip found (may be in TFC)",
-                        texExportName, upk.getName());
-                return null;
-            }
-
-            // ── Infer pixel format from data sizes ────────────────────────────
-            int pixCount = mipW * mipH;
-            int[] pixels;
-            if (!format.isEmpty()) {
-                // Use declared format if available
-                if (format.contains("DXT1") || format.contains("PF_DXT1")) {
-                    pixels = DxtDecoder.decodeDXT1(mipData, mipW, mipH);
-                } else if (format.contains("DXT5") || format.contains("PF_DXT5") ||
-                           format.contains("DXT3") || format.contains("PF_DXT3")) {
-                    pixels = DxtDecoder.decodeDXT5(mipData, mipW, mipH);
-                } else if (format.contains("B8G8R8A8") || format.contains("A8R8G8B8")) {
-                    pixels = decodeBGRA(mipData, pixCount);
-                } else {
-                    // Infer from size
-                    pixels = inferAndDecode(mipData, mipW, mipH, pixCount);
-                }
-            } else {
-                pixels = inferAndDecode(mipData, mipW, mipH, pixCount);
-            }
-            if (pixels == null) return null;
-
-            // ── Build NativeImage and register ───────────────────────────────
-            NativeImage img = new NativeImage(NativeImage.Format.RGBA, mipW, mipH, false);
-            for (int py = 0; py < mipH; py++) {
-                for (int px2 = 0; px2 < mipW; px2++) {
-                    int argb = pixels[py * mipW + px2];
-                    int r2 = (argb >> 16) & 0xFF, g2 = (argb >> 8) & 0xFF, b2 = argb & 0xFF, a2 = (argb >> 24) & 0xFF;
-                    img.setPixel(px2, py, (a2 << 24) | (b2 << 16) | (g2 << 8) | r2);
-                }
-            }
-            DynamicTexture dt = new DynamicTexture(() -> "umapica_ue3_tex", img);
-            String regName = (texExportName != null ? texExportName : tokenHint)
-                    .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_");
-            Identifier rl = Identifier.fromNamespaceAndPath("umapica", "dynamic/" + regName);
-            Minecraft.getInstance().getTextureManager().register(rl, dt);
-            CACHE.put(cacheKey, rl);
-            Umapica.LOGGER.info("[Umapica] UE3 tex loaded: {} → {}×{} fmt='{}'", regName, mipW, mipH, format);
-            return rl;
+            UE3PkgInfo info = new UE3PkgInfo(br, expOffs, expSzs, expClsNames, expNames, pkg);
+            UE3_PKG_INFO.put(key, info);
+            Umapica.LOGGER.info("[Umapica] Parsed UE3 pkg {}: {} exports", pkg.getName(), ec);
+            return info;
+        } catch (Exception e) {
+            Umapica.LOGGER.debug("[Umapica] getUE3PkgInfo {} failed: {}", pkg.getName(), e.getMessage());
+            return null;
         }
+    }
+
+    /**
+     * Searches a parsed UE3 package for a {@code Texture2D} export whose name
+     * contains one of {@code tokens}, then decodes the mip (inline or from a
+     * {@code .tfc} Texture File Cache) and registers it as a {@link DynamicTexture}.
+     */
+    private static @org.jetbrains.annotations.Nullable Identifier loadTexFromUE3Pkg(
+            UE3PkgInfo info, List<String> tokens) {
+        ByteArrayUmapReader br = info.br();
+        File pkgDir = info.pkgFile().getParentFile();
+
+        for (int i = 0; i < info.expName().length; i++) {
+            if (!"Texture2D".equalsIgnoreCase(info.expCls()[i])) continue;
+            String ename = info.expName()[i];
+            if (ename == null || ename.isEmpty()) continue;
+            String lower = ename.toLowerCase(Locale.ROOT);
+            boolean match = false;
+            for (String tok : tokens) { if (!tok.isEmpty() && lower.contains(tok)) { match = true; break; } }
+            if (!match) continue;
+
+            long off = info.expOff()[i];
+            long sz  = info.expSz()[i];
+            if (sz < 16) continue;
+
+            try {
+                br.seek(off);
+                long endPos = off + sz;
+                int sizeX = 0, sizeY = 0;
+                String format  = "";
+                String tfcName = null;
+
+                // Property list
+                while (br.position() < endPos - 8) {
+                    String propName = br.readFName();
+                    if (propName == null || "None".equals(propName)) break;
+                    String propType = br.readFName();
+                    long   propSz   = br.readInt32() & 0xFFFFFFFFL;
+                    br.readInt32(); // arrayIndex
+                    if ("BoolProperty".equals(propType))      { br.readByte(); propSz = 0; }
+                    else if ("ByteProperty".equals(propType)) { br.readFName(); }
+                    long after = br.position() + propSz;
+                    switch (propName) {
+                        case "SizeX"  -> sizeX   = br.readInt32();
+                        case "SizeY"  -> sizeY   = br.readInt32();
+                        case "Format" -> { format  = (after > br.position()) ? br.readFName() : format;
+                                           if (format == null) format = ""; }
+                        case "TextureFileCacheName" -> tfcName = br.readFName();
+                        default -> {}
+                    }
+                    if (br.position() < after) br.seek(after);
+                }
+                if (sizeX <= 0 || sizeY <= 0 || sizeX > 8192 || sizeY > 8192) continue;
+
+                // Resolve TFC file (next to the .upk/.umap)
+                File tfcFile = null;
+                if (tfcName != null && !tfcName.isEmpty() && pkgDir != null) {
+                    tfcFile = new File(pkgDir, tfcName + ".tfc");
+                    if (!tfcFile.exists()) tfcFile = null;
+                }
+
+                // Mip array (TLazyArray<FTexture2DMipMap>)
+                if (br.position() + 8 > endPos) continue;
+                br.readInt32(); // TLazyArray skip-offset
+                int numMips = br.readInt32();
+                if (numMips <= 0 || numMips > 16) continue;
+
+                byte[] mipData = null;
+                int mipW = 0, mipH = 0;
+                for (int m = 0; m < numMips && br.position() < endPos - 16; m++) {
+                    int  bulkFlags  = br.readInt32();
+                    int  elemCount  = br.readInt32();  // raw mip byte count
+                    int  sizeOnDisk = br.readInt32();  // 0 = external TFC, >0 = inline
+                    long bulkOff    = br.readUInt32(); // offset in TFC (uint32 handles >2 GB TFC)
+                    int  mwi        = br.readInt32();
+                    int  mhi        = br.readInt32();
+
+                    if (elemCount <= 0 || mwi <= 0 || mhi <= 0) continue;
+
+                    if (sizeOnDisk > 0 && sizeOnDisk <= 4 * 1024 * 1024) {
+                        // Inline mip – data follows mwi/mhi in this UE3 variant
+                        mipData = br.readBytes(sizeOnDisk);
+                        mipW = mwi; mipH = mhi;
+                        break;
+                    } else if (sizeOnDisk == 0 && elemCount <= 32 * 1024 * 1024) {
+                        // External TFC mip
+                        if (tfcFile != null) {
+                            try {
+                                byte[] tfc = new byte[elemCount];
+                                try (var fis = Files.newInputStream(tfcFile.toPath())) {
+                                    fis.skipNBytes(bulkOff);
+                                    int read = fis.readNBytes(tfc, 0, elemCount);
+                                    if (read == elemCount) { mipData = tfc; mipW = mwi; mipH = mhi; break; }
+                                }
+                            } catch (Exception tfcEx) {
+                                Umapica.LOGGER.debug("[Umapica] TFC read failed {}: {}",
+                                        tfcFile.getName(), tfcEx.getMessage());
+                            }
+                        }
+                    } else if (sizeOnDisk > 0 && sizeOnDisk < 33554432) {
+                        br.skipBytes(sizeOnDisk); // skip too-large inline mip
+                    }
+                }
+
+                if (mipData == null) {
+                    Umapica.LOGGER.debug("[Umapica] UE3 tex '{}': no mip (sX={} sY={} fmt='{}' tfc={})",
+                            ename, sizeX, sizeY, format, tfcName != null ? tfcName : "none");
+                    continue;
+                }
+
+                int[] pixels = decodeAny(mipData, mipW, mipH, format);
+                if (pixels == null) continue;
+
+                NativeImage img = new NativeImage(NativeImage.Format.RGBA, mipW, mipH, false);
+                for (int py = 0; py < mipH; py++) {
+                    for (int px2 = 0; px2 < mipW; px2++) {
+                        int argb = pixels[py * mipW + px2];
+                        int r2 = (argb>>16)&0xFF, g2 = (argb>>8)&0xFF, b2 = argb&0xFF, a2 = (argb>>24)&0xFF;
+                        img.setPixel(px2, py, (a2<<24)|(b2<<16)|(g2<<8)|r2);
+                    }
+                }
+                DynamicTexture dt = new DynamicTexture(() -> "umapica_ue3_tex", img);
+                String regName = ename.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_");
+                Identifier rl = Identifier.fromNamespaceAndPath("umapica", "dynamic/" + regName);
+                Minecraft.getInstance().getTextureManager().register(rl, dt);
+                Umapica.LOGGER.info("[Umapica] UE3 tex '{}' → {}x{} fmt='{}' tfc={}",
+                        ename, mipW, mipH, format, tfcName != null ? tfcName : "inline");
+                return rl;
+            } catch (Exception e) {
+                Umapica.LOGGER.debug("[Umapica] loadTexFromUE3Pkg '{}': {}", ename, e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /** Decodes DXT1/DXT5/BGRA from {@code data} using the declared or inferred {@code fmt}. */
+    private static int[] decodeAny(byte[] data, int w, int h, String fmt) {
+        if (!fmt.isEmpty()) {
+            if (fmt.contains("DXT1") || fmt.contains("PF_DXT1")) return DxtDecoder.decodeDXT1(data, w, h);
+            if (fmt.contains("DXT5") || fmt.contains("PF_DXT5") ||
+                fmt.contains("DXT3") || fmt.contains("PF_DXT3")) return DxtDecoder.decodeDXT5(data, w, h);
+            if (fmt.contains("B8G8R8A8") || fmt.contains("A8R8G8B8")) return decodeBGRA(data, w * h);
+        }
+        return inferAndDecode(data, w, h, w * h);
     }
 
     /** Infers DXT1/DXT5/BGRA by comparing data size to pixel count. */

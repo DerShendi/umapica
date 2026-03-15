@@ -33,6 +33,9 @@ import java.util.List;
  */
 public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer {
 
+    private int facesThisFrame;
+    private int maxFacesThisFrame;
+
     @Override
     public void emitGizmos(double camX, double camY, double camZ,
                            DebugValueAccess debugValueAccess,
@@ -44,6 +47,8 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
         List<HologramInstance> holograms = HologramManager.get().getAll();
         if (holograms.isEmpty()) return;
 
+        facesThisFrame    = 0;
+        maxFacesThisFrame = Config.FACE_LIMIT.get();
         double _maxDist = Config.RENDER_DISTANCE.get();
         double _maxDistSq = _maxDist * _maxDist;
         for (HologramInstance h : holograms) {
@@ -63,6 +68,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
 
     private void renderWireframe(HologramInstance h) {
         for (UmapActor actor : h.umap.actors) {
+            if (actor.hidden) continue;
             FBox wb = actor.worldBounds();
             if (wb == null) continue;
             AABB aabb = toMcAABB(h, wb);
@@ -77,6 +83,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
 
     private void renderVoxel(HologramInstance h) {
         for (UmapActor actor : h.umap.actors) {
+            if (actor.hidden) continue;
             FBox wb = actor.worldBounds();
             if (wb == null) continue;
             AABB aabb = toMcAABB(h, wb);
@@ -93,6 +100,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
 
     private void renderGhostMesh(HologramInstance h, double camX, double camY, double camZ, double maxDistSq) {
         for (UmapActor actor : h.umap.actors) {
+            if (actor.hidden) continue;
             UmapMeshData mesh = actor.meshData;
             if (mesh == null || mesh.positions == null || mesh.positions.length < 9 || mesh.indices.length < 3) continue;
             renderMesh(h, actor, mesh, camX, camY, camZ, maxDistSq);
@@ -100,68 +108,154 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
     }
 
     /**
+     * Ensures the actor's MC world-space vertex cache is up to date.
+     *
+     * <p>All per-vertex transforms (scale, actor rotation, actor translation, hologram
+     * global rotation, UE→MC axis mapping) are pre-baked into a flat double array
+     * {@code actor.cachedMcVerts}. The cache is invalidated only when the hologram's
+     * origin, scale, or rotation changes – typically never during normal gameplay.</p>
+     */
+    public static void ensureVertexCache(HologramInstance h, UmapActor actor) {
+        if (actor.meshData == null) return;
+        // Fast path: check if the cache is still valid.
+        if (actor.cachedMcVerts != null
+                && actor.cacheOriginHash == h.origin.asLong()
+                && actor.cacheScale == h.scale
+                && actor.cacheRotX == h.rotX
+                && actor.cacheRotY == h.rotY
+                && actor.cacheRotZ == h.rotZ) {
+            return;
+        }
+
+        float[] pos     = actor.meshData.positions;
+        int     numV    = pos.length / 3;
+        double[] mc     = (actor.cachedMcVerts != null && actor.cachedMcVerts.length == numV * 3)
+                          ? actor.cachedMcVerts : new double[numV * 3];
+
+        double sx = actor.transform.scale3D().x();
+        double sy = actor.transform.scale3D().y();
+        double sz = actor.transform.scale3D().z();
+        double tx = actor.transform.translation().x();
+        double ty = actor.transform.translation().y();
+        double tz = actor.transform.translation().z();
+        FQuat  rot = actor.transform.rotation();
+        double qx = rot.x(), qy = rot.y(), qz = rot.z(), qw = rot.w();
+        boolean identityActorRot = (qx == 0.0 && qy == 0.0 && qz == 0.0);
+
+        // Pre-compute hologram rotation trig once for all vertices.
+        boolean hasHolRot = (h.rotX != 0 || h.rotY != 0 || h.rotZ != 0);
+        double cosX = 1, sinX = 0, cosY = 1, sinY = 0, cosZ = 1, sinZ = 0;
+        if (hasHolRot) {
+            double rxr = Math.toRadians(h.rotX), ryr = Math.toRadians(h.rotY), rzr = Math.toRadians(h.rotZ);
+            cosX = Math.cos(rxr); sinX = Math.sin(rxr);
+            cosY = Math.cos(ryr); sinY = Math.sin(ryr);
+            cosZ = Math.cos(rzr); sinZ = Math.sin(rzr);
+        }
+
+        for (int v = 0; v < numV; v++) {
+            int base = v * 3;
+            double wx = sx * pos[base], wy = sy * pos[base+1], wz = sz * pos[base+2];
+
+            if (!identityActorRot) {
+                double ttx = 2.0 * (qy * wz - qz * wy);
+                double tty = 2.0 * (qz * wx - qx * wz);
+                double ttz = 2.0 * (qx * wy - qy * wx);
+                wx = wx + qw * ttx + (qy * ttz - qz * tty);
+                wy = wy + qw * tty + (qz * ttx - qx * ttz);
+                wz = wz + qw * ttz + (qx * tty - qy * ttx);
+            }
+
+            wx += tx; wy += ty; wz += tz;
+
+            if (hasHolRot) {
+                double y1 = wy * cosX - wz * sinX;
+                double z1 = wy * sinX + wz * cosX;
+                double x2 = wx * cosY + z1 * sinY;
+                double z2 = -wx * sinY + z1 * cosY;
+                wx = x2 * cosZ - y1 * sinZ;
+                wy = x2 * sinZ + y1 * cosZ;
+                wz = z2;
+            }
+
+            // UE X→MC X,  UE Z→MC Y,  UE Y→MC Z
+            mc[base]   = h.toMcX(wx);
+            mc[base+1] = h.toMcY(wz);
+            mc[base+2] = h.toMcZ(wy);
+        }
+
+        actor.cachedMcVerts  = mc;
+        actor.cacheOriginHash = h.origin.asLong();
+        actor.cacheScale     = h.scale;
+        actor.cacheRotX      = h.rotX;
+        actor.cacheRotY      = h.rotY;
+        actor.cacheRotZ      = h.rotZ;
+    }
+
+    /**
      * Renders each triangle of the mesh as a degenerate quad (a-b-c-c) using
      * {@link Gizmos#rect(Vec3, Vec3, Vec3, Vec3, GizmoStyle)}.
-     * Each triangle gets a diffuse shade computed from its face normal so the
-     * hologram looks three-dimensional.
-     * The actor's full transform (scale → rotate → translate) is applied to each vertex.
+     * Each triangle gets a diffuse shade computed from its face normal.
+     * MC world-space vertices are read from the pre-built vertex cache.
      */
     private void renderMesh(HologramInstance h, UmapActor actor, UmapMeshData mesh,
                              double camX, double camY, double camZ, double maxDistSq) {
-        int  rgb    = actor.hintColor & 0x00FFFFFF;
-        int  hr = (rgb >> 16) & 0xFF;
-        int  hg = (rgb >>  8) & 0xFF;
-        int  hb =  rgb        & 0xFF;
+        ensureVertexCache(h, actor);
+        double[] mc  = actor.cachedMcVerts;
+        if (mc == null) return;
 
-        float[] pos  = mesh.positions;
-        int[]   idx  = mesh.indices;
-        double  sx   = actor.transform.scale3D().x();
-        double  sy   = actor.transform.scale3D().y();
-        double  sz   = actor.transform.scale3D().z();
-        double  tx   = actor.transform.translation().x();
-        double  ty   = actor.transform.translation().y();
-        double  tz   = actor.transform.translation().z();
-        FQuat   rot  = actor.transform.rotation();
+        int  rgb = actor.hintColor & 0x00FFFFFF;
+        int  hr  = (rgb >> 16) & 0xFF;
+        int  hg  = (rgb >>  8) & 0xFF;
+        int  hb  =  rgb        & 0xFF;
+
+        float[] pos = mesh.positions;
+        int[]   idx = mesh.indices;
+        int     mcLen = mc.length;
 
         for (int i = 0; i + 2 < idx.length; i += 3) {
             int ia = idx[i]     * 3;
             int ib = idx[i + 1] * 3;
             int ic = idx[i + 2] * 3;
-            if (ia + 2 >= pos.length || ib + 2 >= pos.length || ic + 2 >= pos.length) continue;
+            if (ia + 2 >= mcLen || ib + 2 >= mcLen || ic + 2 >= mcLen) continue;
+            if (actor.hiddenTriangles != null && actor.hiddenTriangles.get(i / 3)) continue;
 
-            float ax = pos[ia], ay = pos[ia+1], az = pos[ia+2];
-            float bx = pos[ib], by = pos[ib+1], bz = pos[ib+2];
-            float cx = pos[ic], cy = pos[ic+1], cz = pos[ic+2];
+            double vax = mc[ia], vay = mc[ia+1], vaz = mc[ia+2];
+            double vbx = mc[ib], vby = mc[ib+1], vbz = mc[ib+2];
+            double vcx = mc[ic], vcy = mc[ic+1], vcz = mc[ic+2];
 
-            // Compute face normal for shading
-            float shade = computeShade(ax, ay, az, bx, by, bz, cx, cy, cz);
-            int sr = Math.max(0, Math.min(255, (int)(hr * shade)));
-            int sg = Math.max(0, Math.min(255, (int)(hg * shade)));
-            int sb = Math.max(0, Math.min(255, (int)(hb * shade)));
-            int shadedRgb = (sr << 16) | (sg << 8) | sb;
-
-            int stroke = 0xC0000000 | shadedRgb;
-            int fill   = 0x60000000 | shadedRgb;
-            GizmoStyle style = GizmoStyle.strokeAndFill(stroke, 1.0f, fill);
-
-            Vec3 va = localToMc(h, ax, ay, az, sx, sy, sz, tx, ty, tz, rot);
-            Vec3 vb = localToMc(h, bx, by, bz, sx, sy, sz, tx, ty, tz, rot);
-            Vec3 vc = localToMc(h, cx, cy, cz, sx, sy, sz, tx, ty, tz, rot);
-            // Per-face distance culling: skip triangle if its centroid is beyond render distance
-            double fcx = (va.x + vb.x + vc.x) / 3.0 - camX;
-            double fcy = (va.y + vb.y + vc.y) / 3.0 - camY;
-            double fcz = (va.z + vb.z + vc.z) / 3.0 - camZ;
+            // Distance culling on centroid (no transform needed – already MC-space)
+            double fcx = (vax + vbx + vcx) * (1.0/3.0) - camX;
+            double fcy = (vay + vby + vcy) * (1.0/3.0) - camY;
+            double fcz = (vaz + vbz + vcz) * (1.0/3.0) - camZ;
             if (fcx*fcx + fcy*fcy + fcz*fcz > maxDistSq) continue;
-            // Backface culling in MC world space: skip triangle if its face normal
-            // points away from the camera (dot(normal, cam→centroid) > 0).
-            double eabx = vb.x-va.x, eaby = vb.y-va.y, eabz = vb.z-va.z;
-            double eacx = vc.x-va.x, eacy = vc.y-va.y, eacz = vc.z-va.z;
+
+            // Backface culling in MC world space
+            double eabx = vbx-vax, eaby = vby-vay, eabz = vbz-vaz;
+            double eacx = vcx-vax, eacy = vcy-vay, eacz = vcz-vaz;
             double mnx = eaby*eacz - eabz*eacy;
             double mny = eabz*eacx - eabx*eacz;
             double mnz = eabx*eacy - eaby*eacx;
             if (mnx*fcx + mny*fcy + mnz*fcz > 0) continue;
-            // Render as degenerate quad (triangle = a-b-c-c)
-            Gizmos.rect(va, vb, vc, vc, style);
+
+            // Face budget
+            if (maxFacesThisFrame > 0) {
+                if (facesThisFrame >= maxFacesThisFrame) break;
+                facesThisFrame++;
+            }
+
+            // Shade from local-space positions (no transform needed for diffuse shading)
+            if (ia + 2 >= pos.length || ib + 2 >= pos.length || ic + 2 >= pos.length) continue;
+            float shade = computeShade(pos[ia], pos[ia+1], pos[ia+2],
+                                       pos[ib], pos[ib+1], pos[ib+2],
+                                       pos[ic], pos[ic+1], pos[ic+2]);
+            int sr = Math.max(0, Math.min(255, (int)(hr * shade)));
+            int sg = Math.max(0, Math.min(255, (int)(hg * shade)));
+            int sb = Math.max(0, Math.min(255, (int)(hb * shade)));
+            int shadedRgb = (sr << 16) | (sg << 8) | sb;
+            GizmoStyle style = GizmoStyle.strokeAndFill(0xC0000000 | shadedRgb, 1.0f, 0x60000000 | shadedRgb);
+
+            Gizmos.rect(new Vec3(vax, vay, vaz), new Vec3(vbx, vby, vbz),
+                        new Vec3(vcx, vcy, vcz), new Vec3(vcx, vcy, vcz), style);
         }
     }
 
@@ -198,7 +292,7 @@ public class HologramGizmoRenderer implements DebugRenderer.SimpleDebugRenderer 
      * UE axes: X = East/West, Y = North/South, Z = Up.
      * MC  axes: X = East/West, Z = North/South, Y = Up.
      */
-    private AABB toMcAABB(HologramInstance h, FBox wb) {
+    public static AABB toMcAABB(HologramInstance h, FBox wb) {
         double x0 = wb.min().x(), y0 = wb.min().y(), z0 = wb.min().z();
         double x1 = wb.max().x(), y1 = wb.max().y(), z1 = wb.max().z();
         double minX = Double.MAX_VALUE,  minY = Double.MAX_VALUE,  minZ = Double.MAX_VALUE;

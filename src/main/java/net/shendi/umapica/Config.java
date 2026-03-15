@@ -34,6 +34,11 @@ public class Config {
                      "Raise this if you want the slider to go beyond 512. Default 512.")
             .defineInRange("maxRenderDistance", 512, 16, 4096);
 
+    public static final ModConfigSpec.IntValue FACE_LIMIT = BUILDER
+            .comment("Maximum number of triangle faces rendered per frame (0 = unlimited). " +
+                     "Lower values improve performance at the cost of mesh completeness.")
+            .defineInRange("faceLimit", 0, 0, 10_000_000);
+
     public static final ModConfigSpec.ConfigValue<List<? extends String>> ASSET_SEARCH_PATHS = BUILDER
             .comment("Directories to search for .upk / .uasset mesh files. " +
                      "Add the full path to your game's CookedPC folder here. " +

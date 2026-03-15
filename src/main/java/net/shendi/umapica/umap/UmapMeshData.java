@@ -76,6 +76,38 @@ public class UmapMeshData {
         }
     }
 
+    /**
+     * Per-triangle section index, built lazily.
+     * {@code sectionPerTriangle[t]} is the index into {@link #sections} that owns triangle {@code t},
+     * or {@code -1} if the triangle isn't covered by any section.
+     * This makes texture lookup O(1) per triangle instead of O(sections) per triangle.
+     */
+    private volatile int[] sectionPerTriangle;
+
+    /**
+     * Returns (building on first call) the per-triangle section index array.
+     * Thread-safe: the array is published via a volatile write after construction.
+     */
+    public int[] getTriangleSectionIndex() {
+        if (sections == null || sections.length == 0) return null;
+        int[] cached = sectionPerTriangle;
+        if (cached != null) return cached;
+
+        int triCount = indices.length / 3;
+        int[] map = new int[triCount];
+        java.util.Arrays.fill(map, -1);
+        for (int si = 0; si < sections.length; si++) {
+            Section s = sections[si];
+            int first = s.firstIndex / 3;
+            int last  = first + s.indexCount / 3;
+            for (int t = Math.max(0, first); t < Math.min(triCount, last); t++) {
+                map[t] = si;
+            }
+        }
+        sectionPerTriangle = map;
+        return map;
+    }
+
     @Override
     public String toString() {
         return String.format("UmapMeshData(verts=%d, tris=%d, sections=%d, uvs=%s, bounds=%s)",

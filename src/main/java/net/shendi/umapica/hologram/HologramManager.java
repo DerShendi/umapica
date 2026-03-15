@@ -6,11 +6,13 @@ import net.shendi.umapica.umap.DisneyWorldLoader;
 import net.shendi.umapica.umap.GoldSrcBspLoader;
 import net.shendi.umapica.umap.Source2VpkLoader;
 import net.shendi.umapica.umap.SourceBspLoader;
+import net.shendi.umapica.umap.UmapActor;
 import net.shendi.umapica.umap.UmapPackage;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -277,5 +279,43 @@ public class HologramManager {
         synchronized (changeListeners) {
             changeListeners.forEach(Runnable::run);
         }
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Per-actor hide / undo
+    // ------------------------------------------------------------------ //
+
+    private record HiddenEntry(HologramInstance hologram, UmapActor actor, int triIndex) {}
+    private final ArrayDeque<HiddenEntry> hiddenHistory = new ArrayDeque<>();
+    private static final int HISTORY_MAX = 64;
+
+    /**
+     * Hides a specific triangle ({@code triIndex >= 0}) or the whole actor ({@code triIndex < 0})
+     * and records the action in the undo history.
+     */
+    public void hideActor(HologramInstance h, UmapActor actor, int triIndex) {
+        if (triIndex >= 0) {
+            if (actor.hiddenTriangles == null) actor.hiddenTriangles = new java.util.BitSet();
+            actor.hiddenTriangles.set(triIndex);
+        } else {
+            actor.hidden = true;
+        }
+        if (hiddenHistory.size() >= HISTORY_MAX) hiddenHistory.pollLast();
+        hiddenHistory.push(new HiddenEntry(h, actor, triIndex));
+    }
+
+    /**
+     * Restores the most recently hidden triangle or actor.
+     * @return the actor that was modified, or {@code null} if history is empty.
+     */
+    public @Nullable UmapActor undoHide() {
+        HiddenEntry e = hiddenHistory.poll();
+        if (e == null) return null;
+        if (e.triIndex() >= 0) {
+            if (e.actor().hiddenTriangles != null) e.actor().hiddenTriangles.clear(e.triIndex());
+        } else {
+            e.actor().hidden = false;
+        }
+        return e.actor();
     }
 }

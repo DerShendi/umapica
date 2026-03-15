@@ -40,6 +40,21 @@ public class UmapActor {
 
     /** Rough material / surface colour hint extracted from the asset name (for voxel colouring). */
     public int hintColor = 0xFFAAAAAA; // light-grey default
+    /** When true this actor is hidden by the player via the left-click flint tool (wireframe/voxel modes, or AABB fallback). */
+    public boolean hidden = false;
+    /** Per-triangle hide mask set by the left-click flint tool. Null until first use. */
+    public java.util.BitSet hiddenTriangles;
+
+    // ── Per-actor MC world-space vertex cache ──────────────────────────────
+    // Flat array [x0,y0,z0, x1,y1,z1, ...] in Minecraft world coordinates.
+    // Rebuilt when the hologram's position/scale/rotation changes.
+    // null = cache not yet built.
+    public double[] cachedMcVerts;
+    public long   cacheOriginHash = Long.MIN_VALUE;
+    public double cacheScale      = Double.NaN;
+    public float  cacheRotX       = Float.NaN;
+    public float  cacheRotY       = Float.NaN;
+    public float  cacheRotZ       = Float.NaN;
 
     public UmapActor(String className, String actorName) {
         this.className   = className;
