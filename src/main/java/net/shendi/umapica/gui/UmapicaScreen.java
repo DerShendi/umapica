@@ -188,7 +188,7 @@ public class UmapicaScreen extends Screen {
         // ── Render Distance slider ───────────────────────────────────── //
         renderDistSlider = new AbstractSliderButton(ctrlX, cy, 162, 18,
                 Component.empty(),
-                (Config.RENDER_DISTANCE.get() - 32.0) / (512.0 - 32.0)) {
+                (Config.RENDER_DISTANCE.get() - 16.0) / (Config.MAX_RENDER_DISTANCE.get() - 16.0)) {
             @Override protected void updateMessage() {
                 setMessage(Component.literal("Mesh distance: " + sliderToBlocks(this.value) + " blocks"));
             }
@@ -389,9 +389,10 @@ public class UmapicaScreen extends Screen {
     //  Actions
     // ================================================================== //
 
-    /** Maps slider [0,1] to an integer block distance in [32, 512]. */
+    /** Maps slider [0,1] to an integer block distance in [16, maxRenderDistance]. */
     private static int sliderToBlocks(double value) {
-        return Math.clamp((int) Math.round(value * (512 - 32) + 32), 32, 512);
+        int max = Config.MAX_RENDER_DISTANCE.get();
+        return Math.clamp((int) Math.round(value * (max - 16) + 16), 16, max);
     }
 
     private void refreshFiles() {

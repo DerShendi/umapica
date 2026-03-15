@@ -26,8 +26,13 @@ public class Config {
             .defineInRange("ghostAlpha", 80, 0, 255);
 
     public static final ModConfigSpec.IntValue RENDER_DISTANCE = BUILDER
-            .comment("Maximum hologram render distance in blocks (32-512). Default 128.")
-            .defineInRange("renderDistance", 128, 32, 512);
+            .comment("Current hologram render distance in blocks (16 - maxRenderDistance). Default 128.")
+            .defineInRange("renderDistance", 128, 16, 4096);
+
+    public static final ModConfigSpec.IntValue MAX_RENDER_DISTANCE = BUILDER
+            .comment("Upper limit of the in-game render-distance slider in blocks (16-4096). " +
+                     "Raise this if you want the slider to go beyond 512. Default 512.")
+            .defineInRange("maxRenderDistance", 512, 16, 4096);
 
     public static final ModConfigSpec.ConfigValue<List<? extends String>> ASSET_SEARCH_PATHS = BUILDER
             .comment("Directories to search for .upk / .uasset mesh files. " +
