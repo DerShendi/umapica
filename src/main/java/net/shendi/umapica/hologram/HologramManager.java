@@ -6,6 +6,7 @@ import net.shendi.umapica.umap.DisneyWorldLoader;
 import net.shendi.umapica.umap.GoldSrcBspLoader;
 import net.shendi.umapica.umap.Source2VpkLoader;
 import net.shendi.umapica.umap.SourceBspLoader;
+import net.shendi.umapica.umap.TomodachiLifeLoader;
 import net.shendi.umapica.umap.UmapActor;
 import net.shendi.umapica.umap.UmapPackage;
 import org.jetbrains.annotations.Nullable;
@@ -103,6 +104,38 @@ public class HologramManager {
                 return h;
             } catch (IOException | IllegalArgumentException e) {
                 Umapica.LOGGER.error("[Umapica] Failed to load Blender model {}: {}", file.getName(), e.getMessage(), e);
+                return null;
+            }
+        });
+    }
+
+    /**
+     * Asynchronously loads a Tomodachi Life BFRES NX file ({@code .bfres.zs})
+     * and adds it as a single-actor hologram.
+     *
+     * @param file the .bfres.zs file to load
+     * @return a future completing with the new {@link HologramInstance}, or {@code null} on failure
+     */
+    public CompletableFuture<@Nullable HologramInstance> loadBfresAsync(File file) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                TomodachiLifeLoader loader = new TomodachiLifeLoader();
+                net.shendi.umapica.umap.UmapMeshData mesh = loader.load(file.toPath());
+
+                UmapPackage pkg = new UmapPackage(file);
+                UmapActor actor = new UmapActor("StaticMeshActor", file.getName());
+                actor.meshData = mesh;
+                pkg.actors.add(actor);
+
+                int id = nextId.getAndIncrement();
+                HologramInstance h = new HologramInstance(id, pkg);
+                h.scale = net.shendi.umapica.Config.DEFAULT_SCALE.get();
+                synchronized (holograms) { holograms.add(h); }
+                notifyChange();
+                Umapica.LOGGER.info("[Umapica] BFRES hologram {} loaded: {}", id, h);
+                return h;
+            } catch (IOException | IllegalArgumentException e) {
+                Umapica.LOGGER.error("[Umapica] Failed to load BFRES {}: {}", file.getName(), e.getMessage(), e);
                 return null;
             }
         });

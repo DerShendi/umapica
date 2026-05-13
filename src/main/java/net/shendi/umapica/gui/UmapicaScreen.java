@@ -457,7 +457,8 @@ public class UmapicaScreen extends Screen {
                         || f.getName().toLowerCase().endsWith(".gltf")
                         || f.getName().toLowerCase().endsWith(".zip")
                         || f.getName().toLowerCase().endsWith(".bsp")
-                        || f.getName().toLowerCase().endsWith(".vpk")) {
+                        || f.getName().toLowerCase().endsWith(".vpk")
+                        || f.getName().toLowerCase().endsWith(".bfres.zs")) {
                     entries.add(new FileEntry(f, f.getName(), false));
                 }
             }
@@ -479,11 +480,13 @@ public class UmapicaScreen extends Screen {
         boolean isDisney = nameLower.endsWith(".zip");
         boolean isBsp    = nameLower.endsWith(".bsp");
         boolean isVpk    = nameLower.endsWith(".vpk");
+        boolean isBfres  = nameLower.endsWith(".bfres.zs");
         java.util.concurrent.CompletableFuture<net.shendi.umapica.hologram.HologramInstance> future =
                 isModel   ? HologramManager.get().loadModelAsync(umap)
                 : isDisney ? HologramManager.get().loadDisneyAsync(umap)
                 : isBsp   ? HologramManager.get().loadSourceBspAsync(umap)
                 : isVpk   ? HologramManager.get().loadSource2VpkAsync(umap)
+                : isBfres  ? HologramManager.get().loadBfresAsync(umap)
                            : HologramManager.get().loadAsync(umap, false);
         future.thenAccept(h -> {
             if (h != null) {

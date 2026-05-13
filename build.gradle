@@ -18,7 +18,7 @@ version = mod_version
 group = mod_group_id
 
 repositories {
-    // Add here additional repositories if required by some of the dependencies below.
+    mavenCentral()
 }
 
 base {
@@ -112,6 +112,8 @@ configurations {
 }
 
 dependencies {
+    jarJar(implementation('com.github.luben:zstd-jni:1.5.6-2'))
+
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
